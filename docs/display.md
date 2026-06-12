@@ -1,7 +1,8 @@
 # Output and layout
 
 Reference for what powerwatch prints and how it uses the terminal. Part of the
-[powerwatch README](../README.md).
+[powerwatch README](../README.md); for the `POWERWATCH_STICKY` flag and all other
+settings see the [configuration reference](configuration.md).
 
 ## Columns
 
