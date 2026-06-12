@@ -21,6 +21,21 @@ sparkline) drop off to keep the line from wrapping. The core columns (time
 through rate) are always shown, so a terminal narrower than they need (about
 70 columns) will still wrap.
 
+On an interactive terminal the banner and column headers are pinned to the top
+by default: the data rows scroll beneath them (via a scroll region) so the
+headers stay visible no matter how long it runs. The trade-off is that rows
+which scroll past the top are not kept in the terminal's scrollback. Set
+`POWERWATCH_STICKY=0` to scroll naturally instead: the header is reprinted
+every screenful rather than frozen, which keeps old rows in your scrollback. (A
+fixed header and scrollback are mutually exclusive: a terminal only feeds a line
+to scrollback when it scrolls off the real top of the screen, which a pinned
+header prevents.) When output is piped or redirected, the header is printed once
+inline regardless.
+
+Press **Shift+Tab** at any time to toggle between the two layouts live, so you
+can leave it pinned while watching and flip to scrolling when you want to scroll
+back through history.
+
 ## Install
 
 It lives on `PATH` at `~/.local/bin/powerwatch`, so you can run it from any
