@@ -202,6 +202,43 @@ EOF
   [ "$output" = "0" ]
 }
 
+# --- apu_w: AMD APU SoC power (µW sysfs -> W) ---------------------------------
+
+@test "apu_w converts the amdgpu µW reading to watts" {
+  source "$PW"
+  echo 7006000 >"$BATS_TEST_TMPDIR/power1_input"
+  APU_FILE="$BATS_TEST_TMPDIR/power1_input"
+  run apu_w
+  [ "$output" = "7.006" ]
+}
+
+@test "apu_w is empty when no APU sensor was discovered" {
+  source "$PW"
+  APU_FILE=""
+  run apu_w
+  [ -z "$output" ]
+}
+
+# --- bat_uw: battery draw in µW, by discovered mode --------------------------
+
+@test "bat_uw passes power_now through in power mode" {
+  source "$PW"
+  echo 12500000 >"$BATS_TEST_TMPDIR/power_now"
+  BAT="$BATS_TEST_TMPDIR"; BAT_MODE=power
+  run bat_uw
+  [ "$output" = "12500000" ]
+}
+
+@test "bat_uw computes current·voltage in iv mode" {
+  source "$PW"
+  # 3 A × 8 V = 24 W = 24000000 µW, from µA and µV inputs
+  echo 3000000 >"$BATS_TEST_TMPDIR/current_now"
+  echo 8000000 >"$BATS_TEST_TMPDIR/voltage_now"
+  BAT="$BATS_TEST_TMPDIR"; BAT_MODE=iv
+  run bat_uw
+  [ "$output" = "24000000" ]
+}
+
 # --- sparkline ----------------------------------------------------------------
 
 @test "sparkline maps 0/50/100 W to bottom/middle/top glyphs" {

@@ -73,11 +73,16 @@ POWERCAP=/sys/class/powercap
 
 # discover the battery and AC-adapter sysfs nodes by type, since the names vary
 # across machines (BAT0/BAT1, AC/ADP1/ACAD, ...). Left empty if absent (desktop).
-BAT=""; AC=""
+# Battery draw is read from power_now (µW) where present; some machines (e.g. the
+# Steam Deck) omit it but expose current_now/voltage_now, from which P = I·V.
+BAT=""; BAT_MODE=""; AC=""
 for ps in /sys/class/power_supply/*; do
   [[ -r "$ps/type" ]] || continue
   t=$(<"$ps/type")
-  [[ -z $BAT && $t == Battery && -r "$ps/power_now" ]] && BAT=$ps
+  if [[ -z $BAT && $t == Battery ]]; then
+    if   [[ -r "$ps/power_now" ]]; then BAT=$ps; BAT_MODE=power
+    elif [[ -r "$ps/current_now" && -r "$ps/voltage_now" ]]; then BAT=$ps; BAT_MODE=iv; fi
+  fi
   [[ -z $AC  && $t == Mains   && -r "$ps/online"    ]] && AC=$ps
 done
 
@@ -94,6 +99,25 @@ RAPL_OK=0; RAPL_MAX=0
 if [[ -n $RAPL_DIR && -r "$RAPL_DIR/energy_uj" ]] && head -c1 "$RAPL_DIR/energy_uj" >/dev/null 2>&1; then
   RAPL_OK=1
   RAPL_MAX=$(<"$RAPL_DIR/max_energy_range_uj")
+fi
+
+# --- AMD APU platform power, used when the RAPL counter is unavailable -------
+# On Ryzen APUs (e.g. the Steam Deck) the RAPL energy counter is root-only and,
+# unlike Intel's psys, its package domain excludes the iGPU. The amdgpu hwmon
+# instead exposes the SoC's package-power tracking (slowPPT: the whole CPU+iGPU
+# draw) as an instantaneous µW reading that is readable without root. We take it
+# as the AC platform-power source whenever the RAPL counter isn't usable. It is
+# an instantaneous power, not a monotonic energy counter, so the main loop
+# integrates it over the interval the same way it does the dGPU.
+APU_FILE=""
+if (( ! RAPL_OK )); then
+  for h in /sys/class/hwmon/hwmon*; do
+    [[ -r "$h/name" && $(<"$h/name") == amdgpu && -r "$h/power1_input" ]] || continue
+    # slowPPT marks the APU package sensor; a discrete Radeon's amdgpu lacks it
+    # and its power1 would be GPU-only, so don't mistake that for platform power.
+    [[ -r "$h/power1_label" && $(<"$h/power1_label") == slowPPT ]] || continue
+    APU_FILE="$h/power1_input"; break
+  done
 fi
 
 have_nvidia=0; command -v nvidia-smi >/dev/null 2>&1 && have_nvidia=1
@@ -139,6 +163,18 @@ gpu_w() {
   nvidia-smi -q -d POWER 2>/dev/null | awk -F: '
     /Power Draw/ { v=$2; gsub(/[^0-9.]/,"",v); if (v!="") { print v; exit } }
     END { if (!NR) print 0 }' | { read -r v; echo "${v:-0}"; }
+}
+
+# AMD APU SoC power in watts (instantaneous), or empty when no APU sensor.
+apu_w() { [[ -n $APU_FILE && -r $APU_FILE ]] && awk '{printf "%.3f", $1/1e6}' "$APU_FILE" 2>/dev/null; }
+
+# Battery draw in µW (matching power_now's unit), from whichever source was
+# discovered: power_now directly, or current_now (µA) × voltage_now (µV) / 1e6.
+bat_uw() {
+  if   [[ $BAT_MODE == power ]]; then cat "$BAT/power_now" 2>/dev/null
+  elif [[ $BAT_MODE == iv    ]]; then
+    awk -v v="$(<"$BAT/voltage_now")" '{printf "%.0f", $1*v/1e6}' "$BAT/current_now" 2>/dev/null
+  fi
 }
 
 on_battery() { [[ -r "$AC/online" && $(<"$AC/online") == 0 ]]; }
@@ -244,6 +280,8 @@ else
 fi
 if (( RAPL_OK )); then
   printf '%ssource: RAPL %s + NVIDIA dGPU on AC · battery power_now when unplugged%s\n' "$GR" "$RAPL_NAME" "$RST"
+elif [[ -n $APU_FILE ]]; then
+  printf '%ssource: AMD APU SoC power (amdgpu slowPPT) on AC · battery draw when unplugged%s\n' "$GR" "$RST"
 else
   printf '%s⚠ RAPL not readable; run the udev rule (see README) for CPU power.%s\n' "$Y" "$RST"
   printf '%s  Falling back to GPU-only on AC (big undercount); accurate on battery.%s\n' "$GR" "$RST"
@@ -283,22 +321,26 @@ while :; do
 
   # Battery discharge IS the true whole-machine power, so on battery we use it
   # directly and ignore RAPL/GPU; on AC the total is CPU platform (RAPL) + dGPU.
-  on_bat=0; pw=0
-  if on_battery; then on_bat=1; src=BAT; pw=$(<"$BAT/power_now" 2>/dev/null); pw=${pw:-0}
-  else src=AC; fi
+  on_bat=0; pw=0; apu=-1
+  if on_battery; then on_bat=1; src=BAT; pw=$(bat_uw); pw=${pw:-0}
+  else src=AC; (( RAPL_OK )) || { apu=$(apu_w); apu=${apu:--1}; }
+  fi
 
   # One awk pass for the whole tick: interval power/energy (with RAPL counter
   # wrap correction), running totals, and the projected daily/monthly run rate.
   read -r total_j total_cost tot cw sess_wh day_kwh month_cost totint <<<"$(awk \
     -v ob="$on_bat" -v pt="$prev_t" -v nt="$now" -v pj="$prev_uj" -v cj="$cur_uj" \
-    -v rok="$RAPL_OK" -v rmax="$RAPL_MAX" -v g="$g" -v pw="$pw" \
+    -v rok="$RAPL_OK" -v rmax="$RAPL_MAX" -v g="$g" -v pw="$pw" -v apu="$apu" \
     -v tj="$total_j" -v tc="$total_cost" -v st="$start_t" -v rate="$cur_rate" 'BEGIN{
       dt = nt - pt; if (dt <= 0) dt = 0.001
       if (ob) { cw = 0; tot = pw / 1e6; add_j = tot * dt }
       else {
-        if (rok && cj != "" && pj != "") { d = cj - pj; if (d < 0) d += rmax; cw = (d/1e6)/dt }
-        else { d = 0; cw = 0 }
-        tot = cw + g; add_j = d/1e6 + g*dt
+        # CPU-platform watts and their interval energy: from the RAPL counter
+        # delta if usable, else the AMD APU instantaneous power, else nothing.
+        if (rok && cj != "" && pj != "") { d = cj - pj; if (d < 0) d += rmax; cw = (d/1e6)/dt; cpuj = d/1e6 }
+        else if (apu >= 0)               { cw = apu; cpuj = cw*dt }
+        else                             { cw = 0;   cpuj = 0 }
+        tot = cw + g; add_j = cpuj + g*dt
       }
       ntj = tj + add_j
       el = nt - st; if (el <= 0) el = 1
