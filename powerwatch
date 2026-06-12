@@ -34,6 +34,9 @@
 # (this box is sv_SE and would otherwise emit '1781242297,100344').
 export LC_ALL=C
 
+# Bump on release. install.sh greps this line to report what an update did.
+VERSION=0.1.0
+
 interval=5
 RATE="${POWERWATCH_RATE:-2.50}"
 CURR="${POWERWATCH_CURR:-}"
@@ -83,6 +86,7 @@ Options (each mirrors a POWERWATCH_* env var; flags win over the env):
       --no-sticky,   scroll naturally, keeping scrollback  [STICKY=0]
       --scroll
   -h, --help         show this help and exit
+  -V, --version      print the version and exit
 
 Live pricing builds an all-in rate of (spot + markup + grid + tax) x VAT and
 needs curl and jq; it falls back to the fixed --rate on any fetch failure. Press
@@ -129,6 +133,7 @@ while (( $# )); do
     --sticky)             STICKY_PREF=1;                 shift;;
     --no-sticky|--scroll) STICKY_PREF=0;                 shift;;
     -h|--help)      usage; exit 0;;
+    -V|--version)   echo "powerwatch $VERSION"; exit 0;;
     --)             shift; break;;
     -*)             die "unknown option '$1'";;
     *)              interval=$1;                         shift;;  # bare positional = interval

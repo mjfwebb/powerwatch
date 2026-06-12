@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # labeled/unlabeled so toggling the no-version-bump label re-runs the check
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 jobs:
   test:
@@ -22,4 +24,25 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Lint the script
-        run: shellcheck powerwatch
+        run: shellcheck powerwatch install.sh
+
+  # PRs that change the script must bump its VERSION= line, so installs and
+  # bug reports can tell builds apart. Pure refactors or comment fixes can opt
+  # out with the 'no-version-bump' label.
+  version-bump:
+    name: version bump
+    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'no-version-bump')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Require a VERSION bump when powerwatch changed
+        run: |
+          base=origin/${{ github.base_ref }}
+          # three-dot range: diff against the merge base, so commits that
+          # landed on main after this PR branched don't count
+          git diff --quiet "$base"...HEAD -- powerwatch && { echo "powerwatch unchanged"; exit 0; }
+          git diff "$base"...HEAD -- powerwatch | grep -q '^+VERSION=' && { echo "VERSION bumped"; exit 0; }
+          echo "::error file=powerwatch::powerwatch changed but VERSION= was not bumped (or add the no-version-bump label)"
+          exit 1

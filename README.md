@@ -20,12 +20,25 @@ layout details.
 
 ## Install
 
+One line, no clone needed — and re-running the same line updates an existing
+install in place:
+
 ```bash
-install -Dm755 powerwatch ~/.local/bin/powerwatch   # ~/.local/bin must be on PATH
+curl -fsSL https://raw.githubusercontent.com/mjfwebb/powerwatch/main/install.sh | bash
 ```
 
-The installed copy is a snapshot; re-run that line after editing the script to
-update it.
+It installs to `~/.local/bin` (override with `POWERWATCH_BIN_DIR`), which must
+be on your PATH. On Intel, append `-s -- --with-udev` to also do the one-time
+sensor setup below (uses sudo).
+
+From a checkout instead:
+
+```bash
+install -Dm755 powerwatch ~/.local/bin/powerwatch
+```
+
+The installed copy is a snapshot; re-run either line after pulling or editing
+the script to update it.
 
 ## Setup: read the CPU power sensor (Intel, one-time)
 
