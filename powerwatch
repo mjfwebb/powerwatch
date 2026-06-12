@@ -300,9 +300,18 @@ init_rate=""; init_src=1
 hdr_lines=()
 build_header() {
   hdr_lines=(); local s keys=""
-  # advertise the live toggle only when stdin can actually receive keypresses
-  (( KB )) && keys=' · Shift+Tab: header layout'
-  printf -v s '%spowerwatch%s  every %ss  (Ctrl+C to quit%s)' "$BOLD" "$RST" "$interval" "$keys"
+  # Show the current layout and the live toggle, but only when stdin can
+  # actually receive keypresses. The tag is colored per mode (and reads
+  # differently) so a Shift+Tab press is unmistakable: cyan PINNED vs yellow
+  # SCROLLING. (Reflects POWERWATCH_STICKY, i.e. the mode the toggle selects.)
+  if (( KB )); then
+    local tag
+    if (( STICKY_PREF )); then printf -v tag '%s▔ PINNED%s'    "$C" "$RST"
+    else                       printf -v tag '%s↕ SCROLLING%s' "$Y" "$RST"; fi
+    printf -v keys '  %s  %sShift+Tab toggles%s' "$tag" "$GR" "$RST"
+  fi
+  printf -v s '%spowerwatch%s  every %ss  %s(Ctrl+C to quit)%s%s' \
+    "$BOLD" "$RST" "$interval" "$GR" "$RST" "$keys"
   hdr_lines+=("$s")
   if (( LIVE )); then
     if (( init_src == 0 )); then
