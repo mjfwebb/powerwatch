@@ -37,22 +37,26 @@ install -Dm755 powerwatch ~/.local/bin/powerwatch
 `install -m755` overwrites in place and keeps it executable. To check which copy
 is live, run `which powerwatch`; to uninstall, `rm ~/.local/bin/powerwatch`.
 
-## Setup: make RAPL readable (one-time, root)
+## Setup: let powerwatch read the CPU power sensor (one-time)
 
-The kernel locks RAPL energy counters to root, a mitigation for the
-CVE-2020-8694 / PLATYPUS side-channel. A udev rule reopens them; they are just
-joule counters and are fine to expose on a personal machine:
+By default Linux only lets the root user read the CPU's built-in power sensor.
+Run these commands once to let your normal user read it too:
 
 ```bash
 sudo cp 99-powercap-readable.rules /etc/udev/rules.d/
 sudo udevadm control --reload
 sudo udevadm trigger --subsystem-match=powercap
-# apply now without waiting for a re-add or reboot:
+# apply right away, without a reboot:
 sudo chmod -R a+r /sys/devices/virtual/powercap/
 ```
 
-Without this, powerwatch still runs but falls back to GPU-only on AC (a large
-undercount) and warns you in the header. Battery mode is unaffected.
+That's it, and it sticks across reboots. If you skip this, powerwatch still runs,
+but on AC power it can only see the GPU, so the wattage reads low (it says so in
+the header). On battery it works either way.
+
+> Why is it root-only? The sensor was locked down to block a hardware
+> side-channel attack (CVE-2020-8694, "PLATYPUS"). The readings are just energy
+> counters, so re-enabling them for yourself on a personal machine is low risk.
 
 ## Usage
 

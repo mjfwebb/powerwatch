@@ -16,9 +16,9 @@ The numbers here are the APS **"Time-of-Use 4pm-7pm Weekdays"** plan:
 
 ## Setup
 
-1. **Install powerwatch and make RAPL readable.** Follow the
-   [main README](../../README.md) (the `install` line plus the one-time udev
-   rule). Confirm it runs: `powerwatch` should print a live `[AC]` line.
+1. **Install powerwatch and let it read the CPU power sensor.** Follow the
+   [main README](../../README.md) (the `install` line plus the one-time setup
+   commands). Confirm it runs: `powerwatch` should print a live `[AC]` line.
 
 2. **Check the rates.** Open [`aps-time-of-use.json`](aps-time-of-use.json) and
    compare against your latest APS bill (rates change, and your plan may differ).
