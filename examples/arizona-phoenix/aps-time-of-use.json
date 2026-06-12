@@ -1,0 +1,7 @@
+{
+  "_comment": "APS 'Time-of-Use 4pm-7pm Weekdays' energy rates in USD/kWh, excluding the basic service charge, adjustors, taxes and fees. Verify against your own bill (aps.com) and edit; APS rates change. Summer = May-Oct bills, Winter = Nov-Apr. Super off-peak applies winter weekdays only.",
+  "summerMonths": ["05", "06", "07", "08", "09", "10"],
+  "onPeak":   { "from": "16:00", "to": "19:00", "summer": 0.34396, "winter": 0.32543 },
+  "superOff": { "from": "10:00", "to": "15:00", "winter": 0.03495 },
+  "offPeak":  { "summer": 0.12345, "winter": 0.12351 }
+}

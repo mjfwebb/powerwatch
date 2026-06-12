@@ -1,0 +1,12 @@
+# Make Intel RAPL energy counters world-readable so powerwatch can read them
+# without root. They were locked to root by the CVE-2020-8694 (PLATYPUS)
+# side-channel mitigation; for an interactive desktop power monitor this is a
+# fine trade — energy_uj is just a cumulative joule counter.
+#
+# Install:
+#   sudo cp 99-powercap-readable.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   sudo udevadm trigger --subsystem-match=powercap
+#   # apply now without waiting for a re-add / reboot:
+#   sudo chmod -R a+r /sys/devices/virtual/powercap/
+SUBSYSTEM=="powercap", ACTION=="add", RUN+="/bin/sh -c 'chmod -R a+r /sys/devices/virtual/powercap/'"

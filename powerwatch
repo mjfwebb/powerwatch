@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# powerwatch - live power and electricity-cost monitor for Linux laptops.
+#
+# Integrates real power sensors over time into cumulative energy (Wh/kWh) and
+# cost, and projects a daily/monthly run rate.
+#
+# Sources, by priority:
+#   - Intel RAPL "psys" domain (whole CPU platform: package + iGPU + DRAM + VRMs)
+#     read as a monotonic energy counter for exact interval energy. Root-readable
+#     only by default; see README.md for the one-line udev rule.
+#   - NVIDIA dGPU via `nvidia-smi` (separate power rail, not in RAPL). It runtime-
+#     suspends in hybrid/Optimus mode, where it reports no data, counted as ~0 W.
+#   - On battery: the battery's power_now is the true whole-machine draw and
+#     supersedes the estimate above (it already covers the GPU, screen, everything).
+#
+# Caveat: on AC, RAPL+GPU is a compute estimate. It leaves out the display
+# backlight, AC-adapter conversion loss (~10-15%), USB peripherals and battery
+# charging, so it undercounts what your wall meter sees. For bill-accurate cost
+# use a smart plug. On battery, power_now is accurate for the laptop itself.
+#
+# Live pricing (opt-in): set POWERWATCH_LIVE=1 and it fetches the spot price for
+# the current slot from a JSON provider, building an all-in price/kWh = (spot +
+# markup + grid + tax) * VAT. The provider is pluggable (see PRICE_URL/PRICE_JQ);
+# it defaults to elprisetjustnu.se / Nord Pool, which needs a POWERWATCH_ZONE.
+# The day's prices are cached under ~/.cache/powerwatch. On any fetch failure, or
+# when live pricing is off, it uses the fixed POWERWATCH_RATE.
+#
+# Usage: powerwatch [interval_seconds]        (default 5)
+#   POWERWATCH_LIVE=1     enable live spot pricing          (default 0)
+#   POWERWATCH_ZONE=...   bidding zone for the URL template (no default)
+#   POWERWATCH_PRICE_URL  price-endpoint template, placeholders {year} {month}
+#                         {day} {date} {zone}  (default: elprisetjustnu.se)
+#   POWERWATCH_PRICE_JQ   jq program -> spot price/kWh, given --arg t/hour/date/dow
+#   POWERWATCH_MARKUP=0   supplier markup, price/kWh ex tax (default 0)
+#   POWERWATCH_GRID=0     grid transfer fee, price/kWh ex tax (default 0)
+#   POWERWATCH_TAX=0      energy tax, price/kWh ex VAT       (default 0)
+#   POWERWATCH_VAT=1      VAT / sales-tax multiplier         (default 1)
+#   POWERWATCH_RATE=2.50  fixed price per kWh               (default 2.50)
+#   POWERWATCH_CURR=...   currency label                    (default none)
+
+# Force C locale so EPOCHREALTIME / awk use '.' as the decimal separator
+# (this box is sv_SE and would otherwise emit '1781242297,100344').
+export LC_ALL=C
+
+interval="${1:-5}"
+RATE="${POWERWATCH_RATE:-2.50}"
+CURR="${POWERWATCH_CURR:-}"
+
+LIVE="${POWERWATCH_LIVE:-0}"
+ZONE="${POWERWATCH_ZONE:-}"
+MARKUP="${POWERWATCH_MARKUP:-0}"
+GRID="${POWERWATCH_GRID:-0}"
+TAX="${POWERWATCH_TAX:-0}"
+VAT="${POWERWATCH_VAT:-1}"
+
+# Pluggable price provider. POWERWATCH_PRICE_URL is a template for the JSON
+# endpoint serving the current day's prices; the placeholders {year} {month}
+# {day} {date} {zone} are filled per request. POWERWATCH_PRICE_JQ is a jq
+# program that, given that JSON and --arg t/hour/date for "now", prints the
+# spot price/kWh (empty if none). Defaults target elprisetjustnu.se / Nord Pool.
+# (defaults held in single-quoted vars first: their { } would otherwise
+#  prematurely close the ${VAR:-default} parameter expansion)
+DEFAULT_PRICE_URL='https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone}.json'
+DEFAULT_PRICE_JQ='[ .[] | select(.time_start[11:16] <= $t) ] | last | .SEK_per_kWh // empty'
+PRICE_URL="${POWERWATCH_PRICE_URL:-$DEFAULT_PRICE_URL}"
+PRICE_JQ="${POWERWATCH_PRICE_JQ:-$DEFAULT_PRICE_JQ}"
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/powerwatch"
+have_jq=0; command -v jq >/dev/null 2>&1 && have_jq=1
+have_curl=0; command -v curl >/dev/null 2>&1 && have_curl=1
+# live pricing needs the fetcher + parser, and a zone when the URL template uses one
+(( LIVE )) && [[ $PRICE_URL == *'{zone}'* && -z $ZONE ]] && LIVE=0
+(( LIVE && (!have_jq || !have_curl) )) && LIVE=0
+
+POWERCAP=/sys/class/powercap
+
+# discover the battery and AC-adapter sysfs nodes by type, since the names vary
+# across machines (BAT0/BAT1, AC/ADP1/ACAD, ...). Left empty if absent (desktop).
+BAT=""; AC=""
+for ps in /sys/class/power_supply/*; do
+  [[ -r "$ps/type" ]] || continue
+  t=$(<"$ps/type")
+  [[ -z $BAT && $t == Battery && -r "$ps/power_now" ]] && BAT=$ps
+  [[ -z $AC  && $t == Mains   && -r "$ps/online"    ]] && AC=$ps
+done
+
+# --- discover the best RAPL domain: prefer psys, else package-0 -------------
+RAPL_DIR=""; RAPL_NAME=""
+for d in "$POWERCAP"/intel-rapl:[0-9]*; do
+  [[ -r "$d/name" ]] || continue
+  n=$(<"$d/name")
+  if [[ $n == psys ]]; then RAPL_DIR=$d; RAPL_NAME=$n; break; fi
+  [[ $n == package-0 && -z $RAPL_DIR ]] && { RAPL_DIR=$d; RAPL_NAME=$n; }
+done
+
+RAPL_OK=0; RAPL_MAX=0
+if [[ -n $RAPL_DIR && -r "$RAPL_DIR/energy_uj" ]] && head -c1 "$RAPL_DIR/energy_uj" >/dev/null 2>&1; then
+  RAPL_OK=1
+  RAPL_MAX=$(<"$RAPL_DIR/max_energy_range_uj")
+fi
+
+have_nvidia=0; command -v nvidia-smi >/dev/null 2>&1 && have_nvidia=1
+
+# --- colors -----------------------------------------------------------------
+if [[ -t 1 ]]; then
+  R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; B=$'\e[34m'; C=$'\e[36m'
+  GR=$'\e[90m'; BOLD=$'\e[1m'; RST=$'\e[0m'
+else
+  R= G= Y= B= C= GR= BOLD= RST=
+fi
+pcolor() { local w=$1   # color total watts
+  if   (( w < 20 )); then printf '%s' "$G"
+  elif (( w < 60 )); then printf '%s' "$Y"
+  else                    printf '%s' "$R"; fi
+}
+
+# --- readers ----------------------------------------------------------------
+rapl_uj() { (( RAPL_OK )) && cat "$RAPL_DIR/energy_uj" 2>/dev/null || echo ""; }
+
+# dGPU watts; empty/N/A (runtime-suspended in hybrid mode) -> 0
+gpu_w() {
+  (( have_nvidia )) || { echo 0; return; }
+  nvidia-smi -q -d POWER 2>/dev/null | awk -F: '
+    /Power Draw/ { v=$2; gsub(/[^0-9.]/,"",v); if (v!="") { print v; exit } }
+    END { if (!NR) print 0 }' | { read -r v; echo "${v:-0}"; }
+}
+
+on_battery() { [[ -r "$AC/online" && $(<"$AC/online") == 0 ]]; }
+bat_w() { local p; p=$(<"$BAT/power_now" 2>/dev/null); awk -v p="${p:-0}" 'BEGIN{printf "%.2f", p/1e6}'; }
+
+# --- live electricity pricing (pluggable JSON provider) --------------------
+# Expand the URL template for a given date (YYYY-MM-DD).
+price_url() {
+  local d=$1 u=$PRICE_URL
+  u=${u//\{year\}/${d:0:4}}; u=${u//\{month\}/${d:5:2}}; u=${u//\{day\}/${d:8:2}}
+  u=${u//\{date\}/$d}; u=${u//\{zone\}/$ZONE}
+  printf '%s' "$u"
+}
+
+# Fetch and cache the day's price document once; echo its cache path on success.
+# The cache key is a hash of the resolved URL, so different providers/zones/days
+# never collide.
+fetch_day() {
+  local d=$1 url f
+  url=$(price_url "$d")
+  f="$CACHE_DIR/$(printf '%s' "$url" | cksum | cut -d' ' -f1).json"
+  if [[ ! -s $f ]]; then
+    mkdir -p "$CACHE_DIR" 2>/dev/null || return 1
+    curl -fsS --max-time 8 "$url" -o "$f.tmp" 2>/dev/null \
+      && [[ -s "$f.tmp" ]] && mv -f "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
+  fi
+  printf '%s' "$f"
+}
+
+# Spot price/kWh for the slot covering the current local wall-clock time, or empty.
+# The user's jq program gets --arg t (HH:MM), hour (HH), date (YYYY-MM-DD) and
+# dow (ISO weekday, 1=Mon .. 7=Sun) for the current local time.
+spot_now() {
+  local f
+  f=$(fetch_day "$(date +%F)") || return 1
+  jq -r --arg t "$(date +%H:%M)" --arg hour "$(date +%H)" \
+        --arg date "$(date +%F)" --arg dow "$(date +%u)" \
+    "$PRICE_JQ" "$f" 2>/dev/null
+}
+
+# Effective all-in price for now. Echoes price/kWh; returns 0 if live, 1 if fixed.
+eff_rate() {
+  local spot
+  (( LIVE )) || { printf '%s' "$RATE"; return 1; }
+  spot=$(spot_now)
+  [[ -n $spot ]] || { printf '%s' "$RATE"; return 1; }
+  awk -v s="$spot" -v m="$MARKUP" -v g="$GRID" -v tx="$TAX" -v v="$VAT" \
+    'BEGIN{printf "%.4f", (s+m+g+tx)*v}'
+}
+
+# --- sparkline of recent total power, scaled 0..100W ------------------------
+SPARK=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █); hist=()
+sparkline() {
+  local out="" v idx
+  for v in "${hist[@]}"; do
+    (( v < 0 )) && v=0; (( v > 100 )) && v=100
+    idx=$(( v*7/100 )); out+="${SPARK[$idx]}"
+  done
+  printf '%s' "$out"
+}
+
+cleanup() { printf '%s\n' "$RST"; exit 0; }
+trap cleanup INT TERM
+
+# --- header -----------------------------------------------------------------
+printf '%spowerwatch%s  every %ss  (Ctrl+C to quit)\n' "$BOLD" "$RST" "$interval"
+if (( LIVE )); then
+  init_rate=$(eff_rate); init_src=$?
+  if (( init_src == 0 )); then
+    printf '%sprice: %sLIVE %sspot%s%s → %s%.2f %s/kWh%s %s(markup %s · grid %s · tax %s · VAT ×%s)%s\n' \
+      "$GR" "$BOLD" "${ZONE:+$ZONE }" "$RST" "$GR" "$BOLD" "$init_rate" "$CURR" "$RST" \
+      "$GR" "$MARKUP" "$GRID" "$TAX" "$VAT" "$RST"
+  else
+    printf '%s⚠ %sprice fetch failed, using fixed %s %s/kWh until it recovers%s\n' \
+      "$Y" "${ZONE:+$ZONE }" "$RATE" "$CURR" "$RST"
+  fi
+else
+  printf '%sprice: fixed %s %s/kWh  (set POWERWATCH_LIVE=1 + POWERWATCH_ZONE for live spot)%s\n' \
+    "$GR" "$RATE" "$CURR" "$RST"
+fi
+if (( RAPL_OK )); then
+  printf '%ssource: RAPL %s + NVIDIA dGPU on AC · battery power_now when unplugged%s\n' "$GR" "$RAPL_NAME" "$RST"
+else
+  printf '%s⚠ RAPL not readable; run the udev rule (see README) for CPU power.%s\n' "$Y" "$RST"
+  printf '%s  Falling back to GPU-only on AC (big undercount); accurate on battery.%s\n' "$GR" "$RST"
+fi
+printf '%s%-8s  %-9s  %-22s  %-15s  %s%s\n' "$GR" \
+  "time" "power" "(cpu+gpu / source)" "session" "run rate" "$RST"
+
+# --- main loop --------------------------------------------------------------
+prev_uj=""; prev_t=""; total_j=0; total_cost=0; start_t="$EPOCHREALTIME"
+
+while :; do
+  now="$EPOCHREALTIME"
+  cur_uj=$(rapl_uj)
+  g=$(gpu_w)
+
+  if [[ -z $prev_t ]]; then
+    prev_uj=$cur_uj; prev_t=$now; sleep "$interval"; continue
+  fi
+
+  dt=$(awk -v a="$prev_t" -v b="$now" 'BEGIN{d=b-a; print (d>0?d:0.001)}')
+
+  if on_battery; then
+    # battery discharge IS the true whole-machine power; do not add RAPL/GPU
+    src="BAT"; cw=0; tot=$(bat_w)
+    add_j=$(awk -v w="$tot" -v dt="$dt" 'BEGIN{printf "%.6f", w*dt}')
+  else
+    src="AC"
+    # CPU platform energy from the exact counter delta (wrap-corrected)
+    if (( RAPL_OK )) && [[ -n $cur_uj && -n $prev_uj ]]; then
+      read -r duj cw <<<"$(awk -v c="$cur_uj" -v p="$prev_uj" -v m="$RAPL_MAX" -v dt="$dt" \
+        'BEGIN{d=c-p; if(d<0)d+=m; printf "%.0f %.2f", d, (d/1e6)/dt}')"
+    else
+      duj=0; cw=0
+    fi
+    # total = CPU platform + dGPU
+    tot=$(awk -v c="$cw" -v g="$g" 'BEGIN{printf "%.2f", c+g}')
+    add_j=$(awk -v duj="$duj" -v g="$g" -v dt="$dt" 'BEGIN{printf "%.6f", duj/1e6 + g*dt}')
+  fi
+
+  total_j=$(awk -v a="$total_j" -v b="$add_j" 'BEGIN{printf "%.6f", a+b}')
+  elapsed=$(awk -v s="$start_t" -v n="$now" 'BEGIN{e=n-s; print (e>0?e:1)}')
+
+  # price for THIS slot (live spot+fees, or fixed fallback); accumulate cost at
+  # the rate that was actually in force during the interval just measured.
+  cur_rate=$(eff_rate); rate_src=$?
+  add_cost=$(awk -v j="$add_j" -v r="$cur_rate" 'BEGIN{printf "%.6f", (j/3.6e6)*r}')
+  total_cost=$(awk -v a="$total_cost" -v b="$add_cost" 'BEGIN{printf "%.6f", a+b}')
+  cost=$total_cost
+
+  # session energy + run rate projected from running-avg power at the live price
+  read -r sess_wh avg_w day_kwh month_cost <<<"$(awk \
+    -v j="$total_j" -v e="$elapsed" -v rate="$cur_rate" 'BEGIN{
+      wh=j/3600; aw=j/e; daykwh=aw*24/1000; monthcost=daykwh*30*rate;
+      printf "%.3f %.1f %.3f %.2f", wh, aw, daykwh, monthcost }')"
+
+  ts=$(date +%H:%M:%S)
+  totint=$(awk -v t="$tot" 'BEGIN{printf "%d", t+0.5}')
+  hist+=("$totint"); (( ${#hist[@]} > 40 )) && hist=("${hist[@]: -40}")
+
+  if [[ $src == BAT ]]; then detail="batt draw (real)"; else
+    detail=$(awk -v c="$cw" -v g="$g" 'BEGIN{printf "%4.1f + %4.1f", c, g}')
+  fi
+
+  (( rate_src == 0 )) && rtag=L || rtag=F
+  printf '%s%-8s%s  %s%6.1f W%s  %-22s  %sΣ %5.2f Wh  %5.2f %s%s  %s@%.2f%s%s  ~%4.2f kWh/d  ~%5.0f %s/mo  %s%s\n' \
+    "$GR" "$ts" "$RST" \
+    "$(pcolor "$totint")" "$tot" "$RST" \
+    "$detail [$src]" \
+    "$GR" "$sess_wh" "$cost" "$CURR" "$RST" \
+    "$C" "$cur_rate" "$rtag" "$RST" \
+    "$day_kwh" "$month_cost" "$CURR" \
+    "$(sparkline)" "$RST"
+
+  prev_uj=$cur_uj; prev_t=$now
+  sleep "$interval"
+done
