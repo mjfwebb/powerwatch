@@ -14,7 +14,9 @@ Each refresh shows current watts, session energy and cost, a projected
 
 The header is pinned to the top while the rows scroll beneath it. Press
 **Shift+Tab** to switch to a scrolling layout that keeps history in your
-terminal's scrollback (or start with `POWERWATCH_STICKY=0`).
+terminal's scrollback (or start with `POWERWATCH_STICKY=0`). See the
+[output reference](docs/display.md) for the columns, width behaviour, and
+layout details.
 
 ## Install
 
@@ -38,7 +40,9 @@ sudo chmod -R a+r /sys/devices/virtual/powercap/   # apply now, without a reboot
 
 Without it powerwatch still runs, but on AC it sees only the GPU and reads low
 (it says so in the header); on battery it is accurate either way. **AMD APUs
-need no setup**: their `amdgpu` sensor is readable already.
+need no setup**: their `amdgpu` sensor is readable already. See
+[what powerwatch measures](docs/sensors.md) for the per-source details and why
+the Intel sensor is root-only.
 
 ## Usage
 
@@ -78,11 +82,10 @@ POWERWATCH_LIVE=1 POWERWATCH_ZONE=<zone> \
   POWERWATCH_MARKUP=0.08 POWERWATCH_GRID=0.30 POWERWATCH_VAT=1.25 powerwatch
 ```
 
-Any JSON provider works via `POWERWATCH_PRICE_URL` and `POWERWATCH_PRICE_JQ`
-(URL placeholders and jq args are documented in the script header). This also
-covers static time-of-use tariffs; see
-[`examples/arizona-phoenix`](examples/arizona-phoenix) for a worked setup. Price
-data: © [elprisetjustnu.se](https://www.elprisetjustnu.se/).
+For the full variable list, bringing your own JSON provider, and static
+time-of-use tariffs (e.g. [`examples/arizona-phoenix`](examples/arizona-phoenix)),
+see the [pricing guide](docs/pricing.md). Price data:
+© [elprisetjustnu.se](https://www.elprisetjustnu.se/).
 
 ## Accuracy
 
@@ -90,7 +93,9 @@ On AC this is a compute estimate: RAPL plus dGPU leaves out the display
 backlight, AC-adapter conversion loss (~10-15%), USB peripherals and battery
 charging, so it undercounts what your wall meter sees. For bill-accurate
 numbers, measure at the socket with a smart plug. On battery, the battery's own
-power reading covers the whole machine and is genuinely accurate.
+power reading covers the whole machine and is genuinely accurate. See
+[what powerwatch measures](docs/sensors.md) for what each source covers and the
+sysfs paths it reads.
 
 ## Contributing
 
