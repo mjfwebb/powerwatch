@@ -36,7 +36,7 @@ powerwatch --interval 2   # flag (-n 2)
 | `POWERWATCH_MARKUP` | `--markup N` · `-m` | supplier markup, price/kWh ex tax | `0` |
 | `POWERWATCH_GRID` | `--grid N` · `-g` | grid transfer fee, price/kWh ex tax | `0` |
 | `POWERWATCH_TAX` | `--tax N` · `-t` | energy tax, price/kWh ex VAT | `0` |
-| `POWERWATCH_VAT` | `--vat N` · `-v` | VAT / sales-tax multiplier | `1` |
+| `POWERWATCH_VAT` | `--vat N` · `-V` | VAT / sales-tax multiplier | `1` |
 | `POWERWATCH_PRICE_URL` | `--price-url U` · `-u` | price-endpoint URL template | elprisetjustnu.se |
 | `POWERWATCH_PRICE_JQ` | `--price-jq P` · `-j` | jq program that prints the price for now | Nord Pool filter |
 

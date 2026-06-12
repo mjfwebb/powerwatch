@@ -79,14 +79,14 @@ Options (each mirrors a POWERWATCH_* env var; flags win over the env):
   -m, --markup N     supplier markup, price/kWh ex tax     [MARKUP]    (default 0)
   -g, --grid N       grid transfer fee, price/kWh ex tax   [GRID]      (default 0)
   -t, --tax N        energy tax, price/kWh ex VAT          [TAX]       (default 0)
-  -v, --vat N        VAT / sales-tax multiplier            [VAT]       (default 1)
+  -V, --vat N        VAT / sales-tax multiplier            [VAT]       (default 1)
   -u, --price-url U  price-endpoint URL template           [PRICE_URL] (default elprisetjustnu.se)
   -j, --price-jq P   jq program -> spot price/kWh          [PRICE_JQ]  (default Nord Pool)
       --sticky       pin the header to the top             [STICKY=1]  (default on)
       --no-sticky,   scroll naturally, keeping scrollback  [STICKY=0]
       --scroll
   -h, --help         show this help and exit
-  -V, --version      print the version and exit
+  -v, --version      print the version and exit
 
 Live pricing builds an all-in rate of (spot + markup + grid + tax) x VAT and
 needs curl and jq; it falls back to the fixed --rate on any fetch failure. Press
@@ -124,7 +124,7 @@ while (( $# )); do
     --grid=*)       GRID=${1#*=};                   shift;;
     -t|--tax)       needval "$#" "$1"; TAX=$2;        shift 2;;
     --tax=*)        TAX=${1#*=};                    shift;;
-    -v|--vat)       needval "$#" "$1"; VAT=$2;        shift 2;;
+    -V|--vat)       needval "$#" "$1"; VAT=$2;        shift 2;;
     --vat=*)        VAT=${1#*=};                    shift;;
     -u|--price-url) needval "$#" "$1"; PRICE_URL=$2;  shift 2;;
     --price-url=*)  PRICE_URL=${1#*=};              shift;;
@@ -133,7 +133,7 @@ while (( $# )); do
     --sticky)             STICKY_PREF=1;                 shift;;
     --no-sticky|--scroll) STICKY_PREF=0;                 shift;;
     -h|--help)      usage; exit 0;;
-    -V|--version)   echo "powerwatch $VERSION"; exit 0;;
+    -v|--version)   echo "powerwatch $VERSION"; exit 0;;
     --)             shift; break;;
     -*)             die "unknown option '$1'";;
     *)              interval=$1;                         shift;;  # bare positional = interval
