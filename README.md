@@ -192,15 +192,10 @@ place, since it only reads `/sys`.
 Interval timing uses bash 5's `EPOCHREALTIME`, and the script forces `LC_ALL=C`
 so a locale comma decimal separator does not corrupt the arithmetic.
 
-## Testing
+## Contributing
 
-Unit tests live in `tests/` and run with [bats](https://github.com/bats-core/bats-core)
-(`jq` is also needed for the pricing tests):
-
-```bash
-bats tests
-```
-
-The script returns early when sourced, so the tests source it and call its
-functions directly without starting the monitor loop. CI (GitHub Actions) runs
-the suite plus `shellcheck` on every push and pull request.
+Unit tests live in `tests/` and run with
+[bats](https://github.com/bats-core/bats-core) (`bats tests`); CI runs the
+suite plus `shellcheck` on every push and pull request. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, test conventions, and
+style notes.
