@@ -320,10 +320,11 @@ EOF
 }
 
 @test "short aliases set their config var" {
-  source "$PW" -r 1.5 -z SE4 -n 3
+  source "$PW" -r 1.5 -z SE4 -n 3 -V 1.25
   [ "$RATE" = 1.5 ]
   [ "$ZONE" = SE4 ]
   [ "$interval" = 3 ]
+  [ "$VAT" = 1.25 ]
 }
 
 @test "a flag overrides the matching env var" {
@@ -375,6 +376,9 @@ EOF
 
 @test "--version prints a semver and exits 0" {
   run bash "$PW" --version
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^powerwatch\ [0-9]+\.[0-9]+\.[0-9]+$ ]]
+  run bash "$PW" -v
   [ "$status" -eq 0 ]
   [[ "$output" =~ ^powerwatch\ [0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
