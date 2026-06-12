@@ -269,11 +269,13 @@ EOF
 
 @test "script starts, prints the header, and exits cleanly on SIGTERM" {
   out="$BATS_TEST_TMPDIR/out"
-  bash "$PW" 60 >"$out" 2>&1 &
+  # interval 1, not something long: bash delivers the TERM trap only after the
+  # in-flight `sleep $interval` finishes, so kill takes up to one interval.
+  bash "$PW" 1 >"$out" 2>&1 &
   pid=$!
-  sleep 1
+  sleep 0.5
   kill "$pid"
   wait "$pid" || true
-  grep -q "powerwatch  every 60s" "$out"
+  grep -q "powerwatch  every 1s" "$out"
   grep -q "price: fixed 2.50" "$out"
 }
