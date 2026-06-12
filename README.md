@@ -17,7 +17,9 @@ Refreshing on an interval, it shows:
 
 The row adapts to your terminal width: the sparkline grows or shrinks to fill
 the space left, and on a narrow terminal the run-rate projection (and then the
-sparkline) drop off so the line never wraps.
+sparkline) drop off to keep the line from wrapping. The core columns (time
+through rate) are always shown, so a terminal narrower than they need (about
+70 columns) will still wrap.
 
 ## Install
 
