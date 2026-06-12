@@ -249,7 +249,7 @@ else
   printf '%s  Falling back to GPU-only on AC (big undercount); accurate on battery.%s\n' "$GR" "$RST"
 fi
 # Column headers, sized like the data row: the "run rate" label is included
-# only when that column will fit. The sparkline stays unlabeled — its start
+# only when that column will fit. The sparkline stays unlabeled: its start
 # position varies with the leftover width, so a fixed label can't align.
 printf -v hdr '%-8s  %-9s  %-22s  %-15s' \
   "time" "power" "(cpu+gpu / source)" "session"

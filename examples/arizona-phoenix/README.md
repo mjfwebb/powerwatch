@@ -23,8 +23,8 @@ The numbers here are the APS **"Time-of-Use 4pm-7pm Weekdays"** plan:
 2. **Check the rates.** Open [`aps-time-of-use.json`](aps-time-of-use.json) and
    compare against your latest APS bill (rates change, and your plan may differ).
    The values are USD/kWh and exclude the basic service charge, adjustors and
-   taxes. If you want those folded in, bump the rates or use the
-   `POWERWATCH_MARKUP` / `POWERWATCH_VAT` knobs (see the main README).
+   taxes. To fold those in, bump the rates or use the `POWERWATCH_MARKUP` /
+   `POWERWATCH_VAT` variables (see the main README).
 
 3. **Run it.**
 
@@ -36,7 +36,7 @@ The numbers here are the APS **"Time-of-Use 4pm-7pm Weekdays"** plan:
    The header shows `LIVE spot → <rate> USD/kWh`, and the rate switches as you
    cross 4pm / 7pm and between seasons.
 
-That's it. To make it your default, add an alias:
+To make it your default, add an alias:
 
 ```bash
 alias powerwatch-az='/path/to/powerwatch/examples/arizona-phoenix/run.sh'

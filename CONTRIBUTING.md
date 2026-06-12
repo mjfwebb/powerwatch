@@ -1,8 +1,8 @@
 # Contributing
 
 powerwatch is a single bash 5 script (`powerwatch`) plus a udev rule and docs.
-Changes of any size are welcome — bug reports and provider configs for other
-electricity markets especially so.
+Bug reports, fixes, and provider configs for other electricity markets are all
+welcome.
 
 ## Dev setup
 
@@ -13,11 +13,11 @@ the working tree:
 ./powerwatch 2
 ```
 
-Note that the installed copy under `~/.local/bin` is a snapshot; re-run
+The installed copy under `~/.local/bin` is a snapshot; re-run
 `install -Dm755 powerwatch ~/.local/bin/powerwatch` to update it (see the
 README).
 
-You'll want these on `PATH`:
+Tools needed:
 
 | Tool | Used for |
 |------|----------|
@@ -35,10 +35,10 @@ bats tests
 ```
 
 The suite lives in `tests/powerwatch.bats`. The script returns early when
-*sourced* (the guard sits just above the header section), so tests source it
-and call its functions directly — everything above the guard must stay
-side-effect-free beyond read-only discovery, and everything that prints or
-loops must stay below it. Keep it that way when adding code.
+sourced (the guard sits just above the header section), so the tests source it
+and call its functions directly. This puts a constraint on new code: above the
+guard, only definitions and read-only discovery; anything that prints or loops
+goes below it.
 
 Conventions in the suite:
 
@@ -46,11 +46,10 @@ Conventions in the suite:
   scripts placed on `PATH` under `$BATS_TEST_TMPDIR`.
 - The cache is redirected via `XDG_CACHE_HOME` into the test tmpdir, so tests
   never touch `~/.cache/powerwatch`.
-- Env vars are read at source time, so export them *before* `source "$PW"`.
+- Env vars are read at source time, so export them before `source "$PW"`.
 
-New behavior should come with a test when it's testable in isolation (anything
-below the source guard — header layout, the main loop — is exercised only by
-the smoke test, which is fine).
+Add a test for new behavior where you can. Code below the guard (the header
+and main loop) is only covered by the smoke test, and that's fine.
 
 ## Linting
 
@@ -58,15 +57,14 @@ the smoke test, which is fine).
 shellcheck powerwatch
 ```
 
-The script is shellcheck-clean and CI enforces that. If shellcheck flags a
-pattern that is genuinely intentional, add a targeted
-`# shellcheck disable=SCxxxx` directive on the line above it with a brief
-justification — don't widen the CI invocation's scope or ignore lists.
+The script is shellcheck-clean and CI enforces that. If shellcheck flags
+something intentional, add a `# shellcheck disable=SCxxxx` directive on the
+line above it with a short reason. Don't add global ignore lists.
 
 ## CI
 
-`.github/workflows/ci.yml` runs both of the above (bats + shellcheck) on every
-push to `main` and on every pull request. Both jobs must pass.
+`.github/workflows/ci.yml` runs bats and shellcheck on every push to `main`
+and on every pull request. Both jobs must pass.
 
 ## Style
 
@@ -76,14 +74,14 @@ Match the existing code:
   `REPLY`, see `pcolor`/`vis`/`sparkline`).
 - Arithmetic that needs decimals goes through a single `awk` pass; the script
   forces `LC_ALL=C` so `.` is always the decimal separator.
-- Degrade gracefully: missing sensors, commands, or network must reduce
-  functionality (with a note in the header where it matters), never crash.
-- Comments explain *why* — sensor quirks, locale traps, ordering constraints —
+- Missing sensors, commands, or network must reduce functionality (with a
+  note in the header where it matters), never crash.
+- Comments explain why (sensor quirks, locale traps, ordering constraints),
   not what the next line does.
 
 ## Pull requests
 
 - Keep PRs focused; separate refactors from behavior changes.
 - Update the README when flags, env vars, or output change.
-- Describe how you tested on real hardware when the change touches the sensor
-  paths (RAPL, battery, nvidia-smi) — CI can't see those.
+- If the change touches the sensor paths (RAPL, battery, nvidia-smi), say how
+  you tested it on real hardware, since CI can't.
