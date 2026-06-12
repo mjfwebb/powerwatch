@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="184" viewBox="0 0 820 184"
+     font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13">
+  <rect width="820" height="184" rx="8" fill="#1e1f29"/>
+  <!-- reverse-video column-header bar (like top/htop) -->
+  <rect x="8" y="70" width="804" height="18" fill="#cfd6e6"/>
+  <text xml:space="preserve">
+    <tspan x="16" y="26"><tspan fill="#f2f2f2" font-weight="bold">powerwatch</tspan><tspan fill="#7f8c98">  every 5s  (Ctrl+C to quit)  </tspan><tspan fill="#34e2e2">▔ PINNED</tspan><tspan fill="#7f8c98">  Shift+Tab toggles</tspan></tspan>
+    <tspan x="16" y="44" fill="#7f8c98">price: fixed 2.50 kr/kWh  (set POWERWATCH_LIVE=1 + POWERWATCH_ZONE for live spot)</tspan>
+    <tspan x="16" y="62" fill="#7f8c98">source: AMD APU SoC power (amdgpu slowPPT) on AC · battery draw when unplugged</tspan>
+    <tspan x="16" y="83" fill="#1e1f29">time      power      (cpu+gpu / source)      session          run rate</tspan>
+    <tspan x="16" y="106"><tspan fill="#7f8c98">22:16:05</tspan><tspan fill="#d3d7cf">  </tspan><tspan fill="#8ae234">   8.2 W</tspan><tspan fill="#d3d7cf">   8.2 +  0.0 [AC]      </tspan><tspan fill="#7f8c98">Σ  0.01 Wh   0.00 kr</tspan><tspan fill="#d3d7cf">  </tspan><tspan fill="#34e2e2">@2.50F</tspan><tspan fill="#d3d7cf">  ~0.20 kWh/d  ~   15 kr/mo  ▁</tspan></tspan>
+    <tspan x="16" y="124"><tspan fill="#7f8c98">22:16:10</tspan><tspan fill="#d3d7cf">  </tspan><tspan fill="#8ae234">   9.4 W</tspan><tspan fill="#d3d7cf">   9.4 +  0.0 [AC]      </tspan><tspan fill="#7f8c98">Σ  0.02 Wh   0.00 kr</tspan><tspan fill="#d3d7cf">  </tspan><tspan fill="#34e2e2">@2.50F</tspan><tspan fill="#d3d7cf">  ~0.22 kWh/d  ~   16 kr/mo  ▁▂</tspan></tspan>
+    <tspan x="16" y="142"><tspan fill="#7f8c98">22:16:15</tspan><tspan fill="#d3d7cf">  </tspan><tspan fill="#fce94f">  24.5 W</tspan><tspan fill="#d3d7cf">  24.5 +  0.0 [AC]      </tspan><tspan fill="#7f8c98">Σ  0.06 Wh   0.00 kr</tspan><tspan fill="#d3d7cf">  </tspan><tspan fill="#34e2e2">@2.50F</tspan><tspan fill="#d3d7cf">  ~0.41 kWh/d  ~   31 kr/mo  ▁▂▆</tspan></tspan>
+    <tspan x="16" y="160"><tspan fill="#7f8c98">22:16:20</tspan><tspan fill="#d3d7cf">  </tspan><tspan fill="#8ae234">  11.2 W</tspan><tspan fill="#d3d7cf">  11.2 +  0.0 [AC]      </tspan><tspan fill="#7f8c98">Σ  0.08 Wh   0.00 kr</tspan><tspan fill="#d3d7cf">  </tspan><tspan fill="#34e2e2">@2.50F</tspan><tspan fill="#d3d7cf">  ~0.38 kWh/d  ~   28 kr/mo  ▁▂▆▃</tspan></tspan>
+  </text>
+</svg>
