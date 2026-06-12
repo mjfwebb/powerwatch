@@ -302,6 +302,77 @@ EOF
   pcolor 60;  [ "$REPLY" = RED ]
 }
 
+# --- command-line option parsing ---------------------------------------------
+# Options are parsed at source time (before the source guard), so sourcing with
+# positional args lets us assert on the resulting config vars directly.
+
+@test "value flags set their config var" {
+  source "$PW" --rate 1.5 --curr USD --zone SE3 --markup 0.08
+  [ "$RATE" = 1.5 ]
+  [ "$CURR" = USD ]
+  [ "$ZONE" = SE3 ]
+  [ "$MARKUP" = 0.08 ]
+}
+
+@test "--flag=value form is accepted" {
+  source "$PW" --rate=1.5
+  [ "$RATE" = 1.5 ]
+}
+
+@test "short aliases set their config var" {
+  source "$PW" -r 1.5 -z SE4 -n 3
+  [ "$RATE" = 1.5 ]
+  [ "$ZONE" = SE4 ]
+  [ "$interval" = 3 ]
+}
+
+@test "a flag overrides the matching env var" {
+  export POWERWATCH_RATE=9
+  source "$PW" --rate 1.5
+  [ "$RATE" = 1.5 ]
+}
+
+@test "--no-sticky and --scroll turn off the pinned header" {
+  source "$PW" --no-sticky
+  [ "$STICKY_PREF" = 0 ]
+  source "$PW" --scroll
+  [ "$STICKY_PREF" = 0 ]
+}
+
+@test "--live sets the live-pricing intent" {
+  export POWERWATCH_PRICE_URL='https://x/{date}.json'   # zone-free, so it stays on
+  stub_curl
+  source "$PW" --live
+  [ "$LIVE" -eq 1 ]
+}
+
+@test "a bare positional still sets the interval" {
+  source "$PW" 3
+  [ "$interval" = 3 ]
+}
+
+@test "--help prints usage and exits 0" {
+  run bash "$PW" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *Usage* ]]
+}
+
+@test "an unknown option errors and exits 2" {
+  run bash "$PW" --bogus
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"unknown option"* ]]
+}
+
+@test "a value flag with no value errors and exits 2" {
+  run bash "$PW" --rate
+  [ "$status" -eq 2 ]
+}
+
+@test "a non-numeric interval errors and exits 2" {
+  run bash "$PW" abc
+  [ "$status" -eq 2 ]
+}
+
 # --- script smoke test ----------------------------------------------------------
 
 @test "script starts, prints the header, and exits cleanly on SIGTERM" {

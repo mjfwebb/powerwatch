@@ -1,7 +1,8 @@
 # Pricing
 
 Full pricing reference: live spot pricing, every variable, and custom JSON
-providers. Part of the [powerwatch README](../README.md).
+providers. Part of the [powerwatch README](../README.md); for every variable's
+command-line flag and defaults see the [configuration reference](configuration.md).
 
 By default powerwatch costs energy at a flat `POWERWATCH_RATE` per kWh, with no
 currency label:

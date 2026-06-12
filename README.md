@@ -51,6 +51,11 @@ powerwatch        # refresh every 5 s (default)
 powerwatch 2      # every 2 s
 ```
 
+Every setting has both a `POWERWATCH_*` environment variable and an equivalent
+command-line flag (flags win). Run `powerwatch --help` for the option list, or
+see the [configuration reference](docs/configuration.md) for the complete
+env-var ⇄ flag table, defaults, and precedence.
+
 ### Pricing
 
 By default powerwatch costs energy at a flat rate per kWh:
