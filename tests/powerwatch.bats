@@ -373,6 +373,12 @@ EOF
   [ "$status" -eq 2 ]
 }
 
+@test "--version prints a semver and exits 0" {
+  run bash "$PW" --version
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^powerwatch\ [0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
 # --- script smoke test ----------------------------------------------------------
 
 @test "script starts, prints the header, and exits cleanly on SIGTERM" {

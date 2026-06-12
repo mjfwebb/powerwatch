@@ -36,13 +36,22 @@ curl -fsSL "$raw_url/powerwatch" -o "$tmp_dir/powerwatch"
 head -n1 "$tmp_dir/powerwatch" | grep -q '^#!' ||
   { echo "install.sh: $raw_url/powerwatch does not look like a script, not installing" >&2; exit 1; }
 
+# The script carries its version as a VERSION= line; read it from a file
+# rather than executing it. Empty for pre-versioning installs.
+script_version() { sed -n 's/^VERSION=//p' "$1" 2>/dev/null | head -n1; }
+
 target=$bin_dir/powerwatch
+new_ver=$(script_version "$tmp_dir/powerwatch")
 if [[ -e $target ]] && cmp -s "$tmp_dir/powerwatch" "$target"; then
-  echo "powerwatch already up to date: $target"
+  echo "powerwatch already up to date: $target${new_ver:+ ($new_ver)}"
 else
-  verb=installed; [[ -e $target ]] && verb=updated
+  verb=installed; old_ver=""
+  [[ -e $target ]] && { verb=updated; old_ver=$(script_version "$target"); }
   install -Dm755 "$tmp_dir/powerwatch" "$target"
-  echo "$verb $target"
+  case $verb in
+    updated)   echo "updated $target (${old_ver:-unversioned} -> ${new_ver:-unversioned})";;
+    installed) echo "installed $target${new_ver:+ ($new_ver)}";;
+  esac
 fi
 
 case ":$PATH:" in
