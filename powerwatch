@@ -110,6 +110,19 @@ pcolor() { local w=$1   # color total watts
   else                    printf '%s' "$R"; fi
 }
 
+# --- terminal width ---------------------------------------------------------
+# COLS is the usable width, or 0 when output is not a terminal (no limit). A
+# SIGWINCH trap refreshes it on resize, so we only shell out to tput then.
+COLS=0
+esc_re=$'\e''\['"[0-9;]*m"          # one CSI color sequence, for width measurement
+get_cols() {
+  [[ -t 1 ]] || { COLS=0; return; }
+  local c; c=$(tput cols 2>/dev/null)
+  [[ $c =~ ^[0-9]+$ ]] && COLS=$c || COLS=80
+}
+get_cols
+trap get_cols WINCH
+
 # --- readers ----------------------------------------------------------------
 rapl_uj() { (( RAPL_OK )) && cat "$RAPL_DIR/energy_uj" 2>/dev/null || echo ""; }
 
@@ -171,14 +184,26 @@ eff_rate() {
 }
 
 # --- sparkline of recent total power, scaled 0..100W ------------------------
+# Renders at most $1 of the most recent samples (one column each), so the caller
+# can size it to whatever width is left on the line.
 SPARK=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █); hist=()
 sparkline() {
-  local out="" v idx
-  for v in "${hist[@]}"; do
-    (( v < 0 )) && v=0; (( v > 100 )) && v=100
+  local max=$1 out="" v idx i start=0
+  (( max <= 0 )) && return
+  (( ${#hist[@]} > max )) && start=$(( ${#hist[@]} - max ))
+  for (( i=start; i<${#hist[@]}; i++ )); do
+    v=${hist[i]}; (( v < 0 )) && v=0; (( v > 100 )) && v=100
     idx=$(( v*7/100 )); out+="${SPARK[$idx]}"
   done
   printf '%s' "$out"
+}
+
+# Visible byte-width of a string with the color escapes removed. Under LC_ALL=C
+# this is a byte count, so callers subtract 1 per multibyte glyph (only Σ here).
+vis() {
+  local s=$1
+  while [[ $s =~ $esc_re ]]; do s=${s//"${BASH_REMATCH[0]}"/}; done
+  printf '%s' "${#s}"
 }
 
 cleanup() { printf '%s\n' "$RST"; exit 0; }
@@ -267,14 +292,33 @@ while :; do
   else printf -v detail '%4.1f + %4.1f' "$cw" "$g"; fi
 
   (( rate_src == 0 )) && rtag=L || rtag=F
-  printf '%s%-8s%s  %s%6.1f W%s  %-22s  %sΣ %5.2f Wh  %5.2f %s%s  %s@%.2f%s%s  ~%4.2f kWh/d  ~%5.0f %s/mo  %s%s\n' \
+  # Assemble the line so it fits the terminal: always show the core columns
+  # (time .. rate); add the run-rate projection only when it fits; fill any
+  # leftover width with the sparkline. Priority: core > projection > sparkline.
+  printf -v core '%s%-8s%s  %s%6.1f W%s  %-22s  %sΣ %5.2f Wh  %5.2f %s%s  %s@%.2f%s%s' \
     "$GR" "$ts" "$RST" \
     "$(pcolor "$totint")" "$tot" "$RST" \
     "$detail [$src]" \
     "$GR" "$sess_wh" "$cost" "$CURR" "$RST" \
-    "$C" "$cur_rate" "$rtag" "$RST" \
-    "$day_kwh" "$month_cost" "$CURR" \
-    "$(sparkline)" "$RST"
+    "$C" "$cur_rate" "$rtag" "$RST"
+  printf -v proj '  ~%4.2f kWh/d  ~%5.0f %s/mo' "$day_kwh" "$month_cost" "$CURR"
+
+  if (( COLS == 0 )); then                       # not a terminal: no width limit
+    printf '%s%s  %s%s\n' "$core" "$proj" "$(sparkline 40)" "$RST"
+  else
+    core_cols=$(( $(vis "$core") - 1 ))          # -1: the lone Σ is 2 bytes, 1 col
+    proj_cols=$(vis "$proj")
+    if (( core_cols + proj_cols <= COLS )); then
+      spark_cols=$(( COLS - core_cols - proj_cols - 2 ))
+      if (( spark_cols > 0 )); then
+        printf '%s%s  %s%s\n' "$core" "$proj" "$(sparkline "$spark_cols")" "$RST"
+      else
+        printf '%s%s%s\n' "$core" "$proj" "$RST"
+      fi
+    else                                         # too narrow for the projection
+      printf '%s%s\n' "$core" "$RST"
+    fi
+  fi
 
   prev_uj=$cur_uj; prev_t=$now
   sleep "$interval"

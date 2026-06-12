@@ -12,8 +12,12 @@ Refreshing on an interval, it shows:
 - Session energy (`Σ … Wh`) since launch, and its cost at your tariff.
 - A run rate projection, `~kWh/day` and `~cost/month`, extrapolated from the
   running average power, so you can see what your current workload costs over time.
-- A sparkline of recent total power (last 40 samples, scaled 0-100 W).
+- A sparkline of recent total power (up to 40 samples, scaled 0-100 W).
 - An `[AC]` or `[BAT]` tag showing which measurement path is live.
+
+The row adapts to your terminal width: the sparkline grows or shrinks to fill
+the space left, and on a narrow terminal the run-rate projection (and then the
+sparkline) drop off so the line never wraps.
 
 ## Install
 
