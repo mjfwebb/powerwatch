@@ -104,21 +104,27 @@ if [[ -t 1 ]]; then
 else
   R= G= Y= C= GR= BOLD= RST=
 fi
-pcolor() { local w=$1   # color total watts
-  if   (( w < 20 )); then printf '%s' "$G"
-  elif (( w < 60 )); then printf '%s' "$Y"
-  else                    printf '%s' "$R"; fi
+pcolor() { local w=$1   # color total watts -> REPLY (no subshell in the hot loop)
+  if   (( w < 20 )); then REPLY=$G
+  elif (( w < 60 )); then REPLY=$Y
+  else                    REPLY=$R; fi
 }
 
 # --- terminal width ---------------------------------------------------------
 # COLS is the usable width, or 0 when output is not a terminal (no limit). A
 # SIGWINCH trap refreshes it on resize, so we only shell out to tput then.
+# (A resize landing mid-tick can leave the one line already assembled sized
+# for the old width; the next tick uses the new width.)
 COLS=0
 esc_re=$'\e''\['"[0-9;]*m"          # one CSI color sequence, for width measurement
 get_cols() {
   [[ -t 1 ]] || { COLS=0; return; }
+  # tput can fail (TERM unset/dumb) or report 0; fall back to the shell's
+  # COLUMNS if it has one, then 80. 0 must not leak through: it would be
+  # indistinguishable from "not a terminal" and lift the limit entirely.
   local c; c=$(tput cols 2>/dev/null)
-  [[ $c =~ ^[0-9]+$ ]] && COLS=$c || COLS=80
+  [[ $c =~ ^[1-9][0-9]*$ ]] || c=${COLUMNS-}
+  [[ $c =~ ^[1-9][0-9]*$ ]] && COLS=$c || COLS=80
 }
 get_cols
 trap get_cols WINCH
@@ -184,26 +190,30 @@ eff_rate() {
 }
 
 # --- sparkline of recent total power, scaled 0..100W ------------------------
-# Renders at most $1 of the most recent samples (one column each), so the caller
-# can size it to whatever width is left on the line.
+# Renders into REPLY at most $1 of the most recent samples (one column each),
+# so the caller can size it to whatever width is left on the line.
+HIST_MAX=40                          # samples kept, and rendered when unlimited
 SPARK=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █); hist=()
 sparkline() {
-  local max=$1 out="" v idx i start=0
+  local max=$1 v idx i start=0
+  REPLY=""
   (( max <= 0 )) && return
   (( ${#hist[@]} > max )) && start=$(( ${#hist[@]} - max ))
   for (( i=start; i<${#hist[@]}; i++ )); do
     v=${hist[i]}; (( v < 0 )) && v=0; (( v > 100 )) && v=100
-    idx=$(( v*7/100 )); out+="${SPARK[$idx]}"
+    idx=$(( v*7/100 )); REPLY+="${SPARK[$idx]}"
   done
-  printf '%s' "$out"
 }
 
-# Visible byte-width of a string with the color escapes removed. Under LC_ALL=C
-# this is a byte count, so callers subtract 1 per multibyte glyph (only Σ here).
+# Visible column-width of a string -> REPLY: strip the color escapes, then drop
+# UTF-8 continuation bytes so every multibyte glyph (Σ, a currency label like
+# € or öre, ...) counts as one column. Double-width CJK glyphs would still be
+# off; none appear here.
 vis() {
   local s=$1
   while [[ $s =~ $esc_re ]]; do s=${s//"${BASH_REMATCH[0]}"/}; done
-  printf '%s' "${#s}"
+  s=${s//[$'\x80'-$'\xbf']/}
+  REPLY=${#s}
 }
 
 cleanup() { printf '%s\n' "$RST"; exit 0; }
@@ -231,8 +241,14 @@ else
   printf '%s⚠ RAPL not readable; run the udev rule (see README) for CPU power.%s\n' "$Y" "$RST"
   printf '%s  Falling back to GPU-only on AC (big undercount); accurate on battery.%s\n' "$GR" "$RST"
 fi
-printf '%s%-8s  %-9s  %-22s  %-15s  %s%s\n' "$GR" \
-  "time" "power" "(cpu+gpu / source)" "session" "run rate" "$RST"
+# Column headers, sized like the data row: the "run rate" label is included
+# only when that column will fit. The sparkline stays unlabeled — its start
+# position varies with the leftover width, so a fixed label can't align.
+printf -v hdr '%-8s  %-9s  %-22s  %-15s' \
+  "time" "power" "(cpu+gpu / source)" "session"
+rr='  run rate'
+(( COLS == 0 || ${#hdr} + ${#rr} <= COLS )) && hdr+=$rr
+printf '%s%s%s\n' "$GR" "$hdr" "$RST"
 
 # --- main loop --------------------------------------------------------------
 prev_uj=""; prev_t=""; total_j=0; total_cost=0; start_t="$EPOCHREALTIME"
@@ -286,7 +302,7 @@ while :; do
   cost=$total_cost
 
   printf -v ts '%(%H:%M:%S)T' -1
-  hist+=("$totint"); (( ${#hist[@]} > 40 )) && hist=("${hist[@]: -40}")
+  hist+=("$totint"); (( ${#hist[@]} > HIST_MAX )) && hist=("${hist[@]: -HIST_MAX}")
 
   if [[ $src == BAT ]]; then detail="batt draw (real)"
   else printf -v detail '%4.1f + %4.1f' "$cw" "$g"; fi
@@ -295,30 +311,30 @@ while :; do
   # Assemble the line so it fits the terminal: always show the core columns
   # (time .. rate); add the run-rate projection only when it fits; fill any
   # leftover width with the sparkline. Priority: core > projection > sparkline.
+  # (A terminal narrower than the core itself, ~70 cols, still wraps.)
+  pcolor "$totint"
   printf -v core '%s%-8s%s  %s%6.1f W%s  %-22s  %sΣ %5.2f Wh  %5.2f %s%s  %s@%.2f%s%s' \
     "$GR" "$ts" "$RST" \
-    "$(pcolor "$totint")" "$tot" "$RST" \
+    "$REPLY" "$tot" "$RST" \
     "$detail [$src]" \
     "$GR" "$sess_wh" "$cost" "$CURR" "$RST" \
     "$C" "$cur_rate" "$rtag" "$RST"
   printf -v proj '  ~%4.2f kWh/d  ~%5.0f %s/mo' "$day_kwh" "$month_cost" "$CURR"
+  sep='  '                                       # gap before the sparkline
 
+  line=$core
   if (( COLS == 0 )); then                       # not a terminal: no width limit
-    printf '%s%s  %s%s\n' "$core" "$proj" "$(sparkline 40)" "$RST"
+    sparkline "$HIST_MAX"; line+=$proj$sep$REPLY
   else
-    core_cols=$(( $(vis "$core") - 1 ))          # -1: the lone Σ is 2 bytes, 1 col
-    proj_cols=$(vis "$proj")
+    vis "$core"; core_cols=$REPLY
+    vis "$proj"; proj_cols=$REPLY
     if (( core_cols + proj_cols <= COLS )); then
-      spark_cols=$(( COLS - core_cols - proj_cols - 2 ))
-      if (( spark_cols > 0 )); then
-        printf '%s%s  %s%s\n' "$core" "$proj" "$(sparkline "$spark_cols")" "$RST"
-      else
-        printf '%s%s%s\n' "$core" "$proj" "$RST"
-      fi
-    else                                         # too narrow for the projection
-      printf '%s%s\n' "$core" "$RST"
-    fi
+      line+=$proj
+      spark_cols=$(( COLS - core_cols - proj_cols - ${#sep} ))
+      if (( spark_cols > 0 )); then sparkline "$spark_cols"; line+=$sep$REPLY; fi
+    fi                                           # else: too narrow, core only
   fi
+  printf '%s%s\n' "$line" "$RST"
 
   prev_uj=$cur_uj; prev_t=$now
   sleep "$interval"
