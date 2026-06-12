@@ -270,18 +270,24 @@ STICKY=0
 # Keyboard hotkeys need single keypresses, which means non-canonical, no-echo
 # input, but only when stdin is a real terminal (not under the tests or a pipe,
 # where we must leave the tty alone and just sleep between ticks). Save the
-# original termios so cleanup can restore it.
+# original termios so we can restore it on exit.
 KB=0; STTY_SAVE=""
 if [[ -t 0 ]] && STTY_SAVE=$(stty -g 2>/dev/null); then
   stty -icanon -echo 2>/dev/null && KB=1
 fi
 
+# Restore the terminal mode on EXIT, not in the INT/TERM trap: `read -sN` saves
+# the termios at its start (our raw mode) and restores it via an unwind-protect
+# as the shell exits, which runs *after* the signal trap and would clobber an
+# in-trap restore. The EXIT trap runs last, so it gets the final say.
+restore_tty() { (( KB )) && [[ -n $STTY_SAVE ]] && stty "$STTY_SAVE" 2>/dev/null; }
+trap restore_tty EXIT
+
 cleanup() {
-  # Restore the terminal mode first, then release the scroll region and drop the
-  # cursor below the data before resetting color, so the shell prompt returns
-  # under the output, not over the pinned header. (Resetting DECSTBM would
-  # otherwise home the cursor.)
-  (( KB )) && [[ -n $STTY_SAVE ]] && stty "$STTY_SAVE" 2>/dev/null
+  # Release the scroll region and drop the cursor below the data before
+  # resetting color, so the shell prompt returns under the output, not over the
+  # pinned header. (Resetting DECSTBM would otherwise home the cursor.) The tty
+  # mode is restored separately by the EXIT trap above.
   (( STICKY )) && printf '\e[r\e[%d;1H' "$ROWS"
   printf '%s\n' "$RST"
   exit 0
