@@ -130,9 +130,9 @@ have_nvidia=0; command -v nvidia-smi >/dev/null 2>&1 && have_nvidia=1
 # --- colors -----------------------------------------------------------------
 if [[ -t 1 ]]; then
   R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; C=$'\e[36m'
-  GR=$'\e[90m'; BOLD=$'\e[1m'; RST=$'\e[0m'
+  GR=$'\e[90m'; BOLD=$'\e[1m'; RV=$'\e[7m'; RST=$'\e[0m'
 else
-  R='' G='' Y='' C='' GR='' BOLD='' RST=''
+  R='' G='' Y='' C='' GR='' BOLD='' RV='' RST=''
 fi
 pcolor() { local w=$1   # color total watts -> REPLY (no subshell in the hot loop)
   if   (( w < 20 )); then REPLY=$G
@@ -354,7 +354,17 @@ build_header() {
     "time" "power" "(cpu+gpu / source)" "session"
   rr='  run rate'
   (( COLS == 0 || ${#hdr} + ${#rr} <= COLS )) && hdr+=$rr
-  printf -v s '%s%s%s' "$GR" "$hdr" "$RST"
+  # On a terminal, render it as a full-width reverse-video bar (like top's
+  # column header) so it reads as fixed chrome the data scrolls under, rather
+  # than as just another line of output. Pad/clip to exactly COLS so the bar
+  # spans the width with no wrap or ragged end. (hdr is pure ASCII here, so a
+  # byte slice equals a column slice.)
+  if (( COLS > 0 )); then
+    printf -v hdr '%-*s' "$COLS" "$hdr"; hdr=${hdr:0:COLS}
+    printf -v s '%s%s%s' "$RV" "$hdr" "$RST"
+  else
+    printf -v s '%s%s%s' "$GR" "$hdr" "$RST"
+  fi
   hdr_lines+=("$s")
 }
 
