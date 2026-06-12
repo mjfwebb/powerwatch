@@ -57,6 +57,7 @@ VAT="${POWERWATCH_VAT:-1}"
 # The defaults are held in single-quoted vars first: their { } would otherwise
 # prematurely close the ${VAR:-default} parameter expansion below.
 DEFAULT_PRICE_URL='https://www.elprisetjustnu.se/api/v1/prices/{year}/{month}-{day}_{zone}.json'
+# shellcheck disable=SC2016  # $t is a jq variable, not shell
 DEFAULT_PRICE_JQ='[ .[] | select(.time_start[11:16] <= $t) ] | last | .SEK_per_kWh // empty'
 PRICE_URL="${POWERWATCH_PRICE_URL:-$DEFAULT_PRICE_URL}"
 PRICE_JQ="${POWERWATCH_PRICE_JQ:-$DEFAULT_PRICE_JQ}"
@@ -102,7 +103,7 @@ if [[ -t 1 ]]; then
   R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; C=$'\e[36m'
   GR=$'\e[90m'; BOLD=$'\e[1m'; RST=$'\e[0m'
 else
-  R= G= Y= C= GR= BOLD= RST=
+  R='' G='' Y='' C='' GR='' BOLD='' RST=''
 fi
 pcolor() { local w=$1   # color total watts -> REPLY (no subshell in the hot loop)
   if   (( w < 20 )); then REPLY=$G
@@ -160,8 +161,10 @@ fetch_day() {
   f="$CACHE_DIR/$(printf '%s' "$url" | cksum | cut -d' ' -f1).json"
   if [[ ! -s $f ]]; then
     mkdir -p "$CACHE_DIR" 2>/dev/null || return 1
+    # shellcheck disable=SC2015  # || is the catch-all failure path, by design
     curl -fsS --max-time 8 "$url" -o "$f.tmp" 2>/dev/null \
-      && [[ -s "$f.tmp" ]] && mv -f "$f.tmp" "$f" || { rm -f "$f.tmp"; return 1; }
+      && [[ -s "$f.tmp" ]] && mv -f "$f.tmp" "$f" \
+      || { rm -f "$f.tmp"; return 1; }
   fi
   printf '%s' "$f"
 }
@@ -215,6 +218,10 @@ vis() {
   s=${s//[$'\x80'-$'\xbf']/}
   REPLY=${#s}
 }
+
+# When sourced (by the tests), stop here: everything above is definitions and
+# read-only discovery, everything below prints and loops.
+[[ ${BASH_SOURCE[0]} != "$0" ]] && return 0
 
 cleanup() { printf '%s\n' "$RST"; exit 0; }
 trap cleanup INT TERM
