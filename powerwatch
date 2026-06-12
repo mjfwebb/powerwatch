@@ -122,7 +122,6 @@ gpu_w() {
 }
 
 on_battery() { [[ -r "$AC/online" && $(<"$AC/online") == 0 ]]; }
-bat_w() { local p; p=$(<"$BAT/power_now" 2>/dev/null); awk -v p="${p:-0}" 'BEGIN{printf "%.2f", p/1e6}'; }
 
 # --- live electricity pricing (pluggable JSON provider) --------------------
 # Expand the URL template for a given date (YYYY-MM-DD).
@@ -212,6 +211,7 @@ printf '%s%-8s  %-9s  %-22s  %-15s  %s%s\n' "$GR" \
 
 # --- main loop --------------------------------------------------------------
 prev_uj=""; prev_t=""; total_j=0; total_cost=0; start_t="$EPOCHREALTIME"
+cur_rate="$RATE"; rate_src=1; rate_min=""
 
 while :; do
   now="$EPOCHREALTIME"
@@ -222,49 +222,49 @@ while :; do
     prev_uj=$cur_uj; prev_t=$now; sleep "$interval"; continue
   fi
 
-  dt=$(awk -v a="$prev_t" -v b="$now" 'BEGIN{d=b-a; print (d>0?d:0.001)}')
-
-  if on_battery; then
-    # battery discharge IS the true whole-machine power; do not add RAPL/GPU
-    src="BAT"; cw=0; tot=$(bat_w)
-    add_j=$(awk -v w="$tot" -v dt="$dt" 'BEGIN{printf "%.6f", w*dt}')
-  else
-    src="AC"
-    # CPU platform energy from the exact counter delta (wrap-corrected)
-    if (( RAPL_OK )) && [[ -n $cur_uj && -n $prev_uj ]]; then
-      read -r duj cw <<<"$(awk -v c="$cur_uj" -v p="$prev_uj" -v m="$RAPL_MAX" -v dt="$dt" \
-        'BEGIN{d=c-p; if(d<0)d+=m; printf "%.0f %.2f", d, (d/1e6)/dt}')"
-    else
-      duj=0; cw=0
+  # Refresh the live price only when the wall-clock minute changes. Prices are
+  # per-slot (>=15 min, or hourly/event-based for tariffs), never sub-minute, so
+  # this runs jq ~once a minute instead of every tick while still picking up slot
+  # boundaries within one interval. When not live, cur_rate stays POWERWATCH_RATE.
+  if (( LIVE )); then
+    printf -v curmin '%(%H:%M)T' -1
+    if [[ $curmin != "$rate_min" ]]; then
+      cur_rate=$(eff_rate); rate_src=$?; rate_min=$curmin
     fi
-    # total = CPU platform + dGPU
-    tot=$(awk -v c="$cw" -v g="$g" 'BEGIN{printf "%.2f", c+g}')
-    add_j=$(awk -v duj="$duj" -v g="$g" -v dt="$dt" 'BEGIN{printf "%.6f", duj/1e6 + g*dt}')
   fi
 
-  total_j=$(awk -v a="$total_j" -v b="$add_j" 'BEGIN{printf "%.6f", a+b}')
-  elapsed=$(awk -v s="$start_t" -v n="$now" 'BEGIN{e=n-s; print (e>0?e:1)}')
+  # Battery discharge IS the true whole-machine power, so on battery we use it
+  # directly and ignore RAPL/GPU; on AC the total is CPU platform (RAPL) + dGPU.
+  on_bat=0; pw=0
+  if on_battery; then on_bat=1; src=BAT; pw=$(<"$BAT/power_now" 2>/dev/null); pw=${pw:-0}
+  else src=AC; fi
 
-  # price for THIS slot (live spot+fees, or fixed fallback); accumulate cost at
-  # the rate that was actually in force during the interval just measured.
-  cur_rate=$(eff_rate); rate_src=$?
-  add_cost=$(awk -v j="$add_j" -v r="$cur_rate" 'BEGIN{printf "%.6f", (j/3.6e6)*r}')
-  total_cost=$(awk -v a="$total_cost" -v b="$add_cost" 'BEGIN{printf "%.6f", a+b}')
+  # One awk pass for the whole tick: interval power/energy (with RAPL counter
+  # wrap correction), running totals, and the projected daily/monthly run rate.
+  read -r total_j total_cost tot cw sess_wh day_kwh month_cost totint <<<"$(awk \
+    -v ob="$on_bat" -v pt="$prev_t" -v nt="$now" -v pj="$prev_uj" -v cj="$cur_uj" \
+    -v rok="$RAPL_OK" -v rmax="$RAPL_MAX" -v g="$g" -v pw="$pw" \
+    -v tj="$total_j" -v tc="$total_cost" -v st="$start_t" -v rate="$cur_rate" 'BEGIN{
+      dt = nt - pt; if (dt <= 0) dt = 0.001
+      if (ob) { cw = 0; tot = pw / 1e6; add_j = tot * dt }
+      else {
+        if (rok && cj != "" && pj != "") { d = cj - pj; if (d < 0) d += rmax; cw = (d/1e6)/dt }
+        else { d = 0; cw = 0 }
+        tot = cw + g; add_j = d/1e6 + g*dt
+      }
+      ntj = tj + add_j
+      el = nt - st; if (el <= 0) el = 1
+      ntc = tc + (add_j/3.6e6)*rate
+      wh = ntj/3600; daykwh = (ntj/el)*24/1000; monthcost = daykwh*30*rate
+      printf "%.6f %.6f %.2f %.2f %.3f %.3f %.2f %d", ntj, ntc, tot, cw, wh, daykwh, monthcost, int(tot+0.5)
+    }')"
   cost=$total_cost
 
-  # session energy + run rate projected from running-avg power at the live price
-  read -r sess_wh avg_w day_kwh month_cost <<<"$(awk \
-    -v j="$total_j" -v e="$elapsed" -v rate="$cur_rate" 'BEGIN{
-      wh=j/3600; aw=j/e; daykwh=aw*24/1000; monthcost=daykwh*30*rate;
-      printf "%.3f %.1f %.3f %.2f", wh, aw, daykwh, monthcost }')"
-
-  ts=$(date +%H:%M:%S)
-  totint=$(awk -v t="$tot" 'BEGIN{printf "%d", t+0.5}')
+  printf -v ts '%(%H:%M:%S)T' -1
   hist+=("$totint"); (( ${#hist[@]} > 40 )) && hist=("${hist[@]: -40}")
 
-  if [[ $src == BAT ]]; then detail="batt draw (real)"; else
-    detail=$(awk -v c="$cw" -v g="$g" 'BEGIN{printf "%4.1f + %4.1f", c, g}')
-  fi
+  if [[ $src == BAT ]]; then detail="batt draw (real)"
+  else printf -v detail '%4.1f + %4.1f' "$cw" "$g"; fi
 
   (( rate_src == 0 )) && rtag=L || rtag=F
   printf '%s%-8s%s  %s%6.1f W%s  %-22s  %sΣ %5.2f Wh  %5.2f %s%s  %s@%.2f%s%s  ~%4.2f kWh/d  ~%5.0f %s/mo  %s%s\n' \
