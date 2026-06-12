@@ -1,17 +1,17 @@
 # powerwatch
 
 A live terminal monitor that turns a Linux laptop's power sensors into
-cumulative energy (Wh/kWh) and a running electricity cost, plus a projected
-daily and monthly run rate. It works on any Intel machine (for the RAPL energy
-counters) and uses an NVIDIA discrete GPU if one is present, falling back
-gracefully when either is missing.
+cumulative energy (Wh/kWh), a running electricity cost, and a projected daily
+and monthly run rate. It works on any Intel machine (for the RAPL energy
+counters) and uses an NVIDIA discrete GPU if one is present; it still runs
+when either is missing.
 
-Refreshing on an interval, it shows:
+Each refresh shows:
 
 - Current power in watts, split into CPU platform and dGPU on AC.
 - Session energy (`Σ … Wh`) since launch, and its cost at your tariff.
 - A run rate projection, `~kWh/day` and `~cost/month`, extrapolated from the
-  running average power, so you can see what your current workload costs over time.
+  running average power: what your current workload costs over time.
 - A sparkline of recent total power (up to 40 samples, scaled 0-100 W).
 - An `[AC]` or `[BAT]` tag showing which measurement path is live.
 
@@ -56,7 +56,7 @@ sudo udevadm trigger --subsystem-match=powercap
 sudo chmod -R a+r /sys/devices/virtual/powercap/
 ```
 
-That's it, and it sticks across reboots. If you skip this, powerwatch still runs,
+The rule persists across reboots. If you skip this, powerwatch still runs,
 but on AC power it can only see the GPU, so the wattage reads low (it says so in
 the header). On battery it works either way.
 
@@ -191,3 +191,11 @@ place, since it only reads `/sys`.
 
 Interval timing uses bash 5's `EPOCHREALTIME`, and the script forces `LC_ALL=C`
 so a locale comma decimal separator does not corrupt the arithmetic.
+
+## Contributing
+
+Unit tests live in `tests/` and run with
+[bats](https://github.com/bats-core/bats-core) (`bats tests`); CI runs the
+suite and `shellcheck` on every push and pull request. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, test conventions, and
+style notes.
