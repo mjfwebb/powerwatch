@@ -37,6 +37,10 @@
 #   POWERWATCH_VAT=1      VAT / sales-tax multiplier         (default 1)
 #   POWERWATCH_RATE=2.50  fixed price per kWh               (default 2.50)
 #   POWERWATCH_CURR=...   currency label                    (default none)
+#   POWERWATCH_STICKY=1   pin the header to the top of the terminal; set 0 to
+#                         scroll naturally and reprint it each screenful, which
+#                         keeps old rows in the terminal's scrollback (default 1)
+#                         Press Shift+Tab while running to toggle the two live.
 
 # Force C locale so EPOCHREALTIME / awk use '.' as the decimal separator
 # (this box is sv_SE and would otherwise emit '1781242297,100344').
@@ -45,6 +49,7 @@ export LC_ALL=C
 interval="${1:-5}"
 RATE="${POWERWATCH_RATE:-2.50}"
 CURR="${POWERWATCH_CURR:-}"
+STICKY_PREF="${POWERWATCH_STICKY:-1}"
 
 LIVE="${POWERWATCH_LIVE:-0}"
 ZONE="${POWERWATCH_ZONE:-}"
@@ -125,9 +130,9 @@ have_nvidia=0; command -v nvidia-smi >/dev/null 2>&1 && have_nvidia=1
 # --- colors -----------------------------------------------------------------
 if [[ -t 1 ]]; then
   R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; C=$'\e[36m'
-  GR=$'\e[90m'; BOLD=$'\e[1m'; RST=$'\e[0m'
+  GR=$'\e[90m'; BOLD=$'\e[1m'; RV=$'\e[7m'; RST=$'\e[0m'
 else
-  R='' G='' Y='' C='' GR='' BOLD='' RST=''
+  R='' G='' Y='' C='' GR='' BOLD='' RV='' RST=''
 fi
 pcolor() { local w=$1   # color total watts -> REPLY (no subshell in the hot loop)
   if   (( w < 20 )); then REPLY=$G
@@ -135,24 +140,25 @@ pcolor() { local w=$1   # color total watts -> REPLY (no subshell in the hot loo
   else                    REPLY=$R; fi
 }
 
-# --- terminal width ---------------------------------------------------------
-# COLS is the usable width, or 0 when output is not a terminal (no limit). A
-# SIGWINCH trap refreshes it on resize, so we only shell out to tput then.
+# --- terminal dimensions ----------------------------------------------------
+# COLS/ROWS are the usable width/height, or 0 when output is not a terminal (no
+# width limit, no sticky header). A SIGWINCH trap refreshes them on resize, so
+# we only shell out to tput then.
 # (A resize landing mid-tick can leave the one line already assembled sized
 # for the old width; the next tick uses the new width.)
-COLS=0
+COLS=0; ROWS=0
 esc_re=$'\e''\['"[0-9;]*m"          # one CSI color sequence, for width measurement
-get_cols() {
-  [[ -t 1 ]] || { COLS=0; return; }
+get_dims() {
+  [[ -t 1 ]] || { COLS=0; ROWS=0; return; }
   # tput can fail (TERM unset/dumb) or report 0; fall back to the shell's
-  # COLUMNS if it has one, then 80. 0 must not leak through: it would be
-  # indistinguishable from "not a terminal" and lift the limit entirely.
-  local c; c=$(tput cols 2>/dev/null)
-  [[ $c =~ ^[1-9][0-9]*$ ]] || c=${COLUMNS-}
-  [[ $c =~ ^[1-9][0-9]*$ ]] && COLS=$c || COLS=80
+  # COLUMNS/LINES if set, then 80x24. 0 must not leak through for COLS: it would
+  # be indistinguishable from "not a terminal" and lift the width limit entirely.
+  local c r
+  c=$(tput cols  2>/dev/null); [[ $c =~ ^[1-9][0-9]*$ ]] || c=${COLUMNS-}; [[ $c =~ ^[1-9][0-9]*$ ]] && COLS=$c || COLS=80
+  r=$(tput lines 2>/dev/null); [[ $r =~ ^[1-9][0-9]*$ ]] || r=${LINES-};   [[ $r =~ ^[1-9][0-9]*$ ]] && ROWS=$r || ROWS=24
 }
-get_cols
-trap get_cols WINCH
+get_dims
+trap get_dims WINCH
 
 # --- readers ----------------------------------------------------------------
 rapl_uj() { (( RAPL_OK )) && cat "$RAPL_DIR/energy_uj" 2>/dev/null || echo ""; }
@@ -259,45 +265,174 @@ vis() {
 # read-only discovery, everything below prints and loops.
 [[ ${BASH_SOURCE[0]} != "$0" ]] && return 0
 
-cleanup() { printf '%s\n' "$RST"; exit 0; }
+STICKY=0
+
+# Keyboard hotkeys need single keypresses, which means non-canonical, no-echo
+# input, but only when stdin is a real terminal (not under the tests or a pipe,
+# where we must leave the tty alone and just sleep between ticks). Save the
+# original termios so we can restore it on exit.
+KB=0; STTY_SAVE=""
+if [[ -t 0 ]] && STTY_SAVE=$(stty -g 2>/dev/null); then
+  stty -icanon -echo 2>/dev/null && KB=1
+fi
+
+# Restore the terminal mode on EXIT, not in the INT/TERM trap: `read -sN` saves
+# the termios at its start (our raw mode) and restores it via an unwind-protect
+# as the shell exits, which runs *after* the signal trap and would clobber an
+# in-trap restore. The EXIT trap runs last, so it gets the final say.
+restore_tty() { (( KB )) && [[ -n $STTY_SAVE ]] && stty "$STTY_SAVE" 2>/dev/null; }
+trap restore_tty EXIT
+
+cleanup() {
+  # Release the scroll region and drop the cursor below the data before
+  # resetting color, so the shell prompt returns under the output, not over the
+  # pinned header. (Resetting DECSTBM would otherwise home the cursor.) The tty
+  # mode is restored separately by the EXIT trap above.
+  (( STICKY )) && printf '\e[r\e[%d;1H' "$ROWS"
+  printf '%s\n' "$RST"
+  exit 0
+}
 trap cleanup INT TERM
 
 # --- header -----------------------------------------------------------------
-printf '%spowerwatch%s  every %ss  (Ctrl+C to quit)\n' "$BOLD" "$RST" "$interval"
-if (( LIVE )); then
-  init_rate=$(eff_rate); init_src=$?
-  if (( init_src == 0 )); then
-    printf '%sprice: %sLIVE %sspot%s%s → %s%.2f %s/kWh%s %s(markup %s · grid %s · tax %s · VAT ×%s)%s\n' \
-      "$GR" "$BOLD" "${ZONE:+$ZONE }" "$RST" "$GR" "$BOLD" "$init_rate" "$CURR" "$RST" \
-      "$GR" "$MARKUP" "$GRID" "$TAX" "$VAT" "$RST"
-  else
-    printf '%s⚠ %sprice fetch failed, using fixed %s %s/kWh until it recovers%s\n' \
-      "$Y" "${ZONE:+$ZONE }" "$RATE" "$CURR" "$RST"
+# Resolve the live price once (a network round-trip). The header is rebuilt on
+# every resize, but must not re-fetch each time.
+init_rate=""; init_src=1
+(( LIVE )) && { init_rate=$(eff_rate); init_src=$?; }
+
+# Build the header into hdr_lines[] (no trailing newlines). Kept in a function
+# because the sticky layout reprints it on every SIGWINCH, re-fitting the
+# column header to the new width.
+hdr_lines=()
+build_header() {
+  hdr_lines=(); local s keys=""
+  # Show the current layout and the live toggle, but only when stdin can
+  # actually receive keypresses. The tag is colored per mode (and reads
+  # differently) so a Shift+Tab press is unmistakable: cyan PINNED vs yellow
+  # SCROLLING. (Reflects POWERWATCH_STICKY, i.e. the mode the toggle selects.)
+  if (( KB )); then
+    local tag
+    if (( STICKY_PREF )); then printf -v tag '%s▔ PINNED%s'    "$C" "$RST"
+    else                       printf -v tag '%s↕ SCROLLING%s' "$Y" "$RST"; fi
+    printf -v keys '  %s  %sShift+Tab toggles%s' "$tag" "$GR" "$RST"
   fi
-else
-  printf '%sprice: fixed %s %s/kWh  (set POWERWATCH_LIVE=1 + POWERWATCH_ZONE for live spot)%s\n' \
-    "$GR" "$RATE" "$CURR" "$RST"
-fi
-if (( RAPL_OK )); then
-  printf '%ssource: RAPL %s + NVIDIA dGPU on AC · battery power_now when unplugged%s\n' "$GR" "$RAPL_NAME" "$RST"
-elif [[ -n $APU_FILE ]]; then
-  printf '%ssource: AMD APU SoC power (amdgpu slowPPT) on AC · battery draw when unplugged%s\n' "$GR" "$RST"
-else
-  printf '%s⚠ RAPL not readable; run the udev rule (see README) for CPU power.%s\n' "$Y" "$RST"
-  printf '%s  Falling back to GPU-only on AC (big undercount); accurate on battery.%s\n' "$GR" "$RST"
-fi
-# Column headers, sized like the data row: the "run rate" label is included
-# only when that column will fit. The sparkline stays unlabeled: its start
-# position varies with the leftover width, so a fixed label can't align.
-printf -v hdr '%-8s  %-9s  %-22s  %-15s' \
-  "time" "power" "(cpu+gpu / source)" "session"
-rr='  run rate'
-(( COLS == 0 || ${#hdr} + ${#rr} <= COLS )) && hdr+=$rr
-printf '%s%s%s\n' "$GR" "$hdr" "$RST"
+  printf -v s '%spowerwatch%s  every %ss  %s(Ctrl+C to quit)%s%s' \
+    "$BOLD" "$RST" "$interval" "$GR" "$RST" "$keys"
+  hdr_lines+=("$s")
+  if (( LIVE )); then
+    if (( init_src == 0 )); then
+      printf -v s '%sprice: %sLIVE %sspot%s%s → %s%.2f %s/kWh%s %s(markup %s · grid %s · tax %s · VAT ×%s)%s' \
+        "$GR" "$BOLD" "${ZONE:+$ZONE }" "$RST" "$GR" "$BOLD" "$init_rate" "$CURR" "$RST" \
+        "$GR" "$MARKUP" "$GRID" "$TAX" "$VAT" "$RST"
+    else
+      printf -v s '%s⚠ %sprice fetch failed, using fixed %s %s/kWh until it recovers%s' \
+        "$Y" "${ZONE:+$ZONE }" "$RATE" "$CURR" "$RST"
+    fi
+    hdr_lines+=("$s")
+  else
+    printf -v s '%sprice: fixed %s %s/kWh  (set POWERWATCH_LIVE=1 + POWERWATCH_ZONE for live spot)%s' \
+      "$GR" "$RATE" "$CURR" "$RST"
+    hdr_lines+=("$s")
+  fi
+  if (( RAPL_OK )); then
+    printf -v s '%ssource: RAPL %s + NVIDIA dGPU on AC · battery power_now when unplugged%s' "$GR" "$RAPL_NAME" "$RST"
+    hdr_lines+=("$s")
+  elif [[ -n $APU_FILE ]]; then
+    printf -v s '%ssource: AMD APU SoC power (amdgpu slowPPT) on AC · battery draw when unplugged%s' "$GR" "$RST"
+    hdr_lines+=("$s")
+  else
+    printf -v s '%s⚠ RAPL not readable; run the udev rule (see README) for CPU power.%s' "$Y" "$RST"
+    hdr_lines+=("$s")
+    printf -v s '%s  Falling back to GPU-only on AC (big undercount); accurate on battery.%s' "$GR" "$RST"
+    hdr_lines+=("$s")
+  fi
+  # Column headers, sized like the data row: the "run rate" label is included
+  # only when that column will fit. The sparkline stays unlabeled: its start
+  # position varies with the leftover width, so a fixed label can't align.
+  local hdr rr
+  printf -v hdr '%-8s  %-9s  %-22s  %-15s' \
+    "time" "power" "(cpu+gpu / source)" "session"
+  rr='  run rate'
+  (( COLS == 0 || ${#hdr} + ${#rr} <= COLS )) && hdr+=$rr
+  # On a terminal, render it as a full-width reverse-video bar (like top's
+  # column header) so it reads as fixed chrome the data scrolls under, rather
+  # than as just another line of output. Pad/clip to exactly COLS so the bar
+  # spans the width with no wrap or ragged end. (hdr is pure ASCII here, so a
+  # byte slice equals a column slice.)
+  if (( COLS > 0 )); then
+    printf -v hdr '%-*s' "$COLS" "$hdr"; hdr=${hdr:0:COLS}
+    printf -v s '%s%s%s' "$RV" "$hdr" "$RST"
+  else
+    printf -v s '%s%s%s' "$GR" "$hdr" "$RST"
+  fi
+  hdr_lines+=("$s")
+}
+
+# Paint the header. HDR_ROWS records its height for the loop's reprint cadence.
+# When POWERWATCH_STICKY is on and we're on a terminal with rows to spare, pin
+# it: clear the screen, print the header at the top, then confine scrolling to
+# the rows below it with a DECSTBM scroll region, so the data scrolls under a
+# fixed header (but rows that scroll past are lost to the terminal's scrollback).
+# Otherwise (sticky off, piped output, or a terminal too short) print it inline
+# and let everything scroll naturally; in the terminal case the main loop then
+# reprints it each screenful so it stays visible while old rows stay in scrollback.
+HDR_ROWS=0
+render_header() {
+  build_header
+  HDR_ROWS=${#hdr_lines[@]}
+  if (( ! STICKY_PREF )) || (( COLS == 0 )) || (( ROWS <= HDR_ROWS + 1 )); then
+    STICKY=0
+    printf '%s\n' "${hdr_lines[@]}"
+    return
+  fi
+  STICKY=1
+  printf '\e[H\e[2J'                            # home + clear screen
+  printf '%s\n' "${hdr_lines[@]}"               # header occupies rows 1..HDR_ROWS
+  printf '\e[%d;%dr' "$((HDR_ROWS+1))" "$ROWS"  # scroll region: below header .. bottom
+  printf '\e[%d;1H' "$((HDR_ROWS+1))"           # park the cursor at its top
+}
+
+# Once the header exists, a resize must refresh the dimensions; the pinned mode
+# also has to repaint to re-fit the column header and re-establish the scroll
+# region. The reprint mode just adopts the new size on its next screenful.
+winch_handler() { get_dims; (( STICKY )) && render_header; }
+render_header
+trap winch_handler WINCH
+
+# Flip the sticky/scrollback layout live (the Shift+Tab hotkey). When leaving the
+# pinned mode, release the scroll region first; render_header then repaints in
+# whichever mode the new preference selects.
+toggle_sticky() {
+  (( STICKY_PREF = ! STICKY_PREF ))
+  (( STICKY )) && printf '\e[r'      # drop the old scroll region before repaint
+  rows_since_hdr=0
+  render_header
+}
+
+# Idle until the next tick. On a keyboard terminal, poll stdin instead of
+# sleeping so a keypress is handled promptly: Shift+Tab (ESC [ Z) toggles the
+# layout. A bare read timeout means the interval elapsed, time for the next
+# tick. Energy integration uses the real elapsed dt, so key-driven wakeups don't
+# distort the totals.
+idle() {
+  (( KB )) || { sleep "$interval"; return; }
+  local deadline to key rest
+  deadline=$(awk -v n="$EPOCHREALTIME" -v i="$interval" 'BEGIN{printf "%.3f", n+i}')
+  while :; do
+    to=$(awk -v d="$deadline" -v n="$EPOCHREALTIME" \
+         'BEGIN{r=d-n; if(r<=0) print "x"; else printf "%.3f", r}')
+    [[ $to == x ]] && break                       # reached the deadline -> tick
+    IFS= read -rsN1 -t "$to" key || break         # timeout/EOF -> tick now
+    if [[ $key == $'\e' ]]; then                  # CSI? Shift+Tab is ESC [ Z
+      IFS= read -rsN2 -t 0.05 rest
+      [[ $rest == '[Z' ]] && toggle_sticky
+    fi
+  done
+}
 
 # --- main loop --------------------------------------------------------------
 prev_uj=""; prev_t=""; total_j=0; total_cost=0; start_t="$EPOCHREALTIME"
-cur_rate="$RATE"; rate_src=1; rate_min=""
+cur_rate="$RATE"; rate_src=1; rate_min=""; rows_since_hdr=0
 
 while :; do
   now="$EPOCHREALTIME"
@@ -305,7 +440,7 @@ while :; do
   g=$(gpu_w)
 
   if [[ -z $prev_t ]]; then
-    prev_uj=$cur_uj; prev_t=$now; sleep "$interval"; continue
+    prev_uj=$cur_uj; prev_t=$now; idle; continue
   fi
 
   # Refresh the live price only when the wall-clock minute changes. Prices are
@@ -385,6 +520,14 @@ while :; do
   fi
   printf '%s%s\n' "$line" "$RST"
 
+  # Scrollback-friendly mode (not pinned, but a terminal): once a screenful of
+  # rows has gone by, reprint the header inline so it stays in view while the
+  # rows it scrolled past remain in the terminal's scrollback.
+  if (( ! STICKY && COLS > 0 )); then
+    screenful=$(( ROWS - HDR_ROWS )); (( screenful < 1 )) && screenful=1
+    if (( ++rows_since_hdr >= screenful )); then render_header; rows_since_hdr=0; fi
+  fi
+
   prev_uj=$cur_uj; prev_t=$now
-  sleep "$interval"
+  idle
 done
