@@ -43,8 +43,9 @@ the script to update it.
 
 ### Windows
 
-powerwatch is a bash script, so on Windows run it from **Git Bash** (ships with
-[Git for Windows](https://gitforwindows.org/)) or **WSL**, not cmd or
+Windows 11 is supported, with one requirement: powerwatch is a bash script, so
+you run it from a bash shell, either **Git Bash** (ships with
+[Git for Windows](https://gitforwindows.org/)) or **WSL**, rather than cmd or
 PowerShell. The same one-liner installs it from within either shell. On battery
 it reads whole-machine draw from Windows WMI; on AC it sees only the GPU (no
 RAPL access). See [what powerwatch measures](docs/sensors.md#windows-11-msys2git-bash-cygwin-wsl).
