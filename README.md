@@ -41,6 +41,18 @@ install -Dm755 powerwatch ~/.local/bin/powerwatch
 The installed copy is a snapshot; re-run either line after pulling or editing
 the script to update it.
 
+### Windows
+
+powerwatch is a bash script, so on Windows run it from **Git Bash** (ships with
+[Git for Windows](https://gitforwindows.org/)) or **WSL** — not cmd or
+PowerShell. The same one-liner installs it from within either shell. On battery
+it reads whole-machine draw from Windows WMI; on AC it sees only the GPU (no
+RAPL access). See [what powerwatch measures](docs/sensors.md#windows-11-msys2git-bash-cygwin-wsl).
+
+Git Bash's `~/.local/bin` (`/c/Users/<you>/.local/bin`) is not on the Windows
+PATH by default; the installer prints a note if so. Add it to your shell, e.g.
+`echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc`.
+
 ## Setup: read the CPU power sensor (Intel, one-time)
 
 Linux restricts the Intel CPU power sensor to root. Let your user read it:
