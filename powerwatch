@@ -520,7 +520,7 @@ build_header() {
     printf -v s '%ssource: Raspberry Pi whole-board power (vcgencmd pmic_read_adc)%s' "$GR" "$RST"
     hdr_lines+=("$s")
   elif (( OS_WINDOWS )); then
-    printf -v s '%ssource: Windows WMI BatteryStatus on battery · NVIDIA dGPU on AC (no platform power)%s' "$GR" "$RST"
+    printf -v s '%ssource: NVIDIA dGPU on AC · Windows WMI battery draw when unplugged (no platform power)%s' "$GR" "$RST"
     hdr_lines+=("$s")
   elif (( WIN_SHELL )); then
     printf -v s '%s⚠ Windows shell but no PowerShell on PATH; GPU-only (see README).%s' "$Y" "$RST"
