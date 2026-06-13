@@ -35,7 +35,7 @@
 export LC_ALL=C
 
 # Bump on release. install.sh greps this line to report what an update did.
-VERSION=0.3.0
+VERSION=0.3.1
 
 interval=5
 RATE="${POWERWATCH_RATE:-2.50}"
@@ -145,9 +145,19 @@ done
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/powerwatch"
 have_jq=0; command -v jq >/dev/null 2>&1 && have_jq=1
 have_curl=0; command -v curl >/dev/null 2>&1 && have_curl=1
-# live pricing needs the fetcher + parser, and a zone when the URL template uses one
-(( LIVE )) && [[ $PRICE_URL == *'{zone}'* && -z $ZONE ]] && LIVE=0
-(( LIVE && (!have_jq || !have_curl) )) && LIVE=0
+# live pricing needs the fetcher + parser, and a zone when the URL template uses one.
+# Each guard warns to stderr before disabling, so --live never fails silently.
+if (( LIVE )) && [[ $PRICE_URL == *'{zone}'* && -z $ZONE ]]; then
+  printf 'powerwatch: --live needs a price zone but none was given; using fixed rate.\n' >&2
+  printf '  pass --zone (e.g. --zone SE3) or set POWERWATCH_ZONE.\n' >&2
+  LIVE=0
+fi
+if (( LIVE )) && { (( !have_jq )) || (( !have_curl )); }; then
+  missing=; (( have_curl )) || missing="curl"; (( have_jq )) || missing="${missing:+$missing and }jq"
+  printf 'powerwatch: --live needs %s but it is not on PATH; using fixed rate.\n' "$missing" >&2
+  printf '  install the missing tool(s), then retry with --live.\n' >&2
+  LIVE=0
+fi
 
 POWERCAP=/sys/class/powercap
 
