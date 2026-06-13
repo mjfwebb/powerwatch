@@ -258,15 +258,11 @@ fi
 have_nvidia=0; command -v nvidia-smi >/dev/null 2>&1 && have_nvidia=1
 
 # --- Windows CPU-package power, via the LibreHardwareMonitor web server ------
-# Windows exposes no readable RAPL counter, so platform power needs a helper.
-# LibreHardwareMonitor (LHM), run with its Remote Web Server on, serves the full
-# sensor tree as JSON at http://localhost:8085/data.json. (Its WMI provider is
-# not reliably present in current builds, so we use the web server instead.) We
-# walk the tree once at startup for the CPU "Package" power node — identified by
-# a SensorId under /amdcpu or /intelcpu — and remember its stable SensorId. The
-# per-tick value is an instantaneous watt reading, so the main loop integrates
-# it over the interval exactly as it does the AMD APU / Raspberry Pi sensors.
-# PowerShell fetches and parses the JSON natively, so this needs no curl or jq.
+# Windows has no readable RAPL counter. LibreHardwareMonitor's Remote Web Server
+# serves the sensor tree as JSON; we read the CPU "Package" power (under /amdcpu
+# or /intelcpu) from it. (LHM's WMI provider is absent in current builds.) The
+# value is instantaneous watts, integrated over the interval like the AMD APU /
+# Raspberry Pi sensors. PowerShell parses the JSON, so no curl or jq is needed.
 LHM_URL="${POWERWATCH_LHM_URL:-http://localhost:8085/data.json}"
 WIN_CPU_OK=0; WIN_CPU_ID=""
 if (( OS_WINDOWS )); then
@@ -360,34 +356,28 @@ bat_uw() {
   fi
 }
 
-# CPU-package watts (instantaneous) from the cached Windows sensor poll, or empty
-# when no LHM/OHM sensor was found or the last poll returned nothing.
+# CPU-package watts from the cached Windows poll, or empty when unavailable.
 win_cpu_w() { local w=${_WIN_CPU_W:-}; [[ $w =~ ^[0-9]+(\.[0-9]+)?$ ]] && printf '%s' "$w"; }
 
-# Cache of the last Windows WMI query: the discharge rate (read by bat_uw, so it
-# needs no second PowerShell call) and the AC-online flag (returned to the caller).
-# A PowerShell spawn costs hundreds of ms, so on a Windows box it would dominate a
-# short interval; we query at most every WIN_POLL seconds and reuse the cache in
-# between. Power and AC state vary slowly, so this is invisible at any sane
-# interval while keeping `powerwatch 1` responsive. Energy still integrates over
-# the real dt, so the throttle never distorts the totals.
+# Cache of the last Windows poll: battery discharge rate (read by bat_uw), the
+# AC-online flag, and CPU watts. A PowerShell spawn costs hundreds of ms, so we
+# poll at most every WIN_POLL seconds and reuse the cache between. State varies
+# slowly, so this is invisible at any sane interval, and energy still integrates
+# over the real dt, so the throttle never distorts the totals.
 WIN_POLL="${POWERWATCH_WIN_POLL:-5}"
 _WIN_DISCHARGE_MW=0; _WIN_ONLINE=1; _WIN_LAST_POLL=0; _WIN_CPU_W=""
 
-# Assemble the per-poll PowerShell once: battery discharge + AC-online flag (from
-# WMI), and (when an LHM CPU sensor was found) the CPU-package watts (from the web
-# server JSON), in one spawn that echoes "<dischargeMW> <online01> <cpuW>". Both
-# halves are single-quoted literals so their PowerShell $vars survive bash; the
-# URL and sensor id reach PowerShell as $env vars set on the call in on_battery.
-# The CPU watts are emitted as a cleaned numeric string (locale comma -> dot), not
-# cast to [double], so a non-invariant PowerShell culture can't corrupt them.
+# One PowerShell spawn per poll echoes "<dischargeMW> <online01> <cpuW>": battery
+# from WMI, plus CPU watts from the web server when found. CPU watts are emitted
+# as a cleaned string (comma -> dot), not cast to [double], so a non-invariant
+# PowerShell culture can't corrupt the decimal.
 # shellcheck disable=SC2016  # $s/$r/$p are PowerShell variables, not shell
 _WIN_BAT_PS='$s=Get-CimInstance -Namespace root\WMI -ClassName BatteryStatus -ErrorAction SilentlyContinue|Select-Object -First 1; $r=if($s -and $s.DischargeRate){[int]$s.DischargeRate}else{0}; $p=if(-not $s -or $s.PowerOnline){1}else{0}; '
 if (( WIN_CPU_OK )); then
-  # Re-find the CPU Package node by vendor + name each poll, rather than passing
-  # its SensorId through the environment: a leading-slash id like /amdcpu/0/power/0
-  # gets mangled into a Windows path by MSYS env conversion. The match criteria
-  # live inside this single-quoted literal, which conversion leaves alone.
+  # Match the node by vendor + name each poll, not by passing its SensorId via the
+  # environment: a leading-slash id (/amdcpu/0/power/0) gets mangled into a Windows
+  # path by MSYS env conversion. The criteria live in this single-quoted literal,
+  # which conversion leaves alone.
   # shellcheck disable=SC2016  # PowerShell variables ($c/$d/$env:), not shell
   _WIN_CPU_PS='$c=0; try { $d=Invoke-RestMethod -Uri $env:LHM_URL -TimeoutSec 3; $script:cv=""; function Find($n){ if($script:cv){return}; if($n.Type -eq "Power" -and $n.SensorId -match "/(amd|intel)cpu/" -and ($n.Text -eq "Package" -or $n.Text -eq "CPU Package")){ $script:cv=$n.Value; return }; foreach($x in $n.Children){ Find $x } }; Find $d; if($script:cv){ $c=($script:cv -replace "[^0-9.,]","") -replace ",","." } } catch {}; '
 else
