@@ -35,7 +35,7 @@
 export LC_ALL=C
 
 # Bump on release. install.sh greps this line to report what an update did.
-VERSION=0.3.2
+VERSION=0.4.0
 
 interval=5
 RATE="${POWERWATCH_RATE:-2.50}"
@@ -257,6 +257,35 @@ fi
 
 have_nvidia=0; command -v nvidia-smi >/dev/null 2>&1 && have_nvidia=1
 
+# --- Windows CPU-package power, via LibreHardwareMonitor / OpenHardwareMonitor
+# Windows exposes no readable RAPL counter, so platform power needs a helper.
+# LibreHardwareMonitor (LHM) and the older OpenHardwareMonitor (OHM) publish
+# their sensors over WMI when "Publish to WMI" is enabled and the app runs (LHM
+# needs admin to read CPU power). We look for a Power sensor named "CPU Package"
+# (the whole-package draw); failing that, the first CPU* Power sensor. The value
+# is an instantaneous watt reading, so the main loop integrates it over the
+# interval exactly as it does the AMD APU / Raspberry Pi sensors. The discovered
+# namespace and sensor name drive the per-tick query folded into on_battery().
+WIN_CPU_OK=0; WIN_CPU_NS=""; WIN_CPU_NAME=""
+if (( OS_WINDOWS )); then
+  # shellcheck disable=SC2016  # $ns/$p/$sel are PowerShell variables, not shell
+  det=$($PSEXE -NoProfile -Command '
+    foreach ($ns in "LibreHardwareMonitor","OpenHardwareMonitor") {
+      $p = Get-CimInstance -Namespace "root/$ns" -ClassName Sensor `
+             -ErrorAction SilentlyContinue |
+           Where-Object { $_.SensorType -eq "Power" -and $_.Name -like "CPU*" }
+      if ($p) {
+        $sel = $p | Where-Object Name -eq "CPU Package" | Select-Object -First 1
+        if (-not $sel) { $sel = $p | Select-Object -First 1 }
+        "$ns|$($sel.Name)"; break
+      }
+    }
+  ' 2>/dev/null | tr -d '\r')
+  if [[ -n $det ]]; then
+    WIN_CPU_NS=${det%%|*}; WIN_CPU_NAME=${det#*|}; WIN_CPU_OK=1
+  fi
+fi
+
 # --- colors -----------------------------------------------------------------
 if [[ -t 1 ]]; then
   R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; C=$'\e[36m'
@@ -329,6 +358,10 @@ bat_uw() {
   fi
 }
 
+# CPU-package watts (instantaneous) from the cached Windows sensor poll, or empty
+# when no LHM/OHM sensor was found or the last poll returned nothing.
+win_cpu_w() { local w=${_WIN_CPU_W:-}; [[ $w =~ ^[0-9]+(\.[0-9]+)?$ ]] && printf '%s' "$w"; }
+
 # Cache of the last Windows WMI query: the discharge rate (read by bat_uw, so it
 # needs no second PowerShell call) and the AC-online flag (returned to the caller).
 # A PowerShell spawn costs hundreds of ms, so on a Windows box it would dominate a
@@ -337,22 +370,32 @@ bat_uw() {
 # interval while keeping `powerwatch 1` responsive. Energy still integrates over
 # the real dt, so the throttle never distorts the totals.
 WIN_POLL="${POWERWATCH_WIN_POLL:-5}"
-_WIN_DISCHARGE_MW=0; _WIN_ONLINE=1; _WIN_LAST_POLL=0
+_WIN_DISCHARGE_MW=0; _WIN_ONLINE=1; _WIN_LAST_POLL=0; _WIN_CPU_W=""
+
+# Assemble the per-poll PowerShell once: battery discharge + AC-online flag, and
+# (when an LHM/OHM CPU sensor was found) the CPU-package watts, in one spawn that
+# echoes "<dischargeMW> <online01> <cpuW>". The battery half is a single-quoted
+# literal so its PowerShell $vars survive bash; the CPU half is double-quoted to
+# interpolate the discovered namespace/sensor name, with PowerShell $ escaped.
+# shellcheck disable=SC2016  # $s/$r/$p are PowerShell variables, not shell
+_WIN_BAT_PS='$s=Get-CimInstance -Namespace root\WMI -ClassName BatteryStatus -ErrorAction SilentlyContinue|Select-Object -First 1; $r=if($s -and $s.DischargeRate){[int]$s.DischargeRate}else{0}; $p=if(-not $s -or $s.PowerOnline){1}else{0}; '
+if (( WIN_CPU_OK )); then
+  _WIN_CPU_PS="\$c=0; \$cs=Get-CimInstance -Namespace root/$WIN_CPU_NS -ClassName Sensor -ErrorAction SilentlyContinue|Where-Object {\$_.SensorType -eq 'Power' -and \$_.Name -eq '$WIN_CPU_NAME'}|Select-Object -First 1; if(\$cs){\$c=[double]\$cs.Value}; "
+else
+  _WIN_CPU_PS='$c=0; '
+fi
+WIN_POLL_PS="$_WIN_BAT_PS$_WIN_CPU_PS"'"$r $p $c"'
+
 on_battery() {
   if (( OS_WINDOWS )); then
     local nowf=${EPOCHREALTIME%.*}        # integer seconds (LC_ALL=C ensures '.')
     if (( nowf - _WIN_LAST_POLL >= WIN_POLL )); then
-      local out
-      # shellcheck disable=SC2016  # $s/$r/$p are PowerShell variables, not shell
-      out=$($PSEXE -NoProfile -Command '
-        $s = Get-CimInstance -Namespace root\WMI -ClassName BatteryStatus `
-               -ErrorAction SilentlyContinue | Select-Object -First 1
-        $r = if ($s -and $s.DischargeRate) { [int]$s.DischargeRate } else { 0 }
-        $p = if (-not $s -or $s.PowerOnline) { 1 } else { 0 }
-        "$r $p"
-      ' 2>/dev/null | tr -d '\r')
-      _WIN_DISCHARGE_MW=${out%% *}; _WIN_DISCHARGE_MW=${_WIN_DISCHARGE_MW//[^0-9]/}
-      [[ ${out#* } == 0 ]] && _WIN_ONLINE=0 || _WIN_ONLINE=1
+      local out _r _p _c
+      out=$($PSEXE -NoProfile -Command "$WIN_POLL_PS" 2>/dev/null | tr -d '\r')
+      read -r _r _p _c <<<"$out"
+      _WIN_DISCHARGE_MW=${_r//[^0-9]/}
+      [[ $_p == 0 ]] && _WIN_ONLINE=0 || _WIN_ONLINE=1
+      _WIN_CPU_W=$_c
       _WIN_LAST_POLL=$nowf
     fi
     (( _WIN_ONLINE == 0 ))
@@ -519,8 +562,13 @@ build_header() {
   elif (( RPI_OK )); then
     printf -v s '%ssource: Raspberry Pi whole-board power (vcgencmd pmic_read_adc)%s' "$GR" "$RST"
     hdr_lines+=("$s")
+  elif (( OS_WINDOWS && WIN_CPU_OK )); then
+    printf -v s '%ssource: %s CPU package + NVIDIA dGPU on AC · WMI battery draw when unplugged%s' "$GR" "$WIN_CPU_NS" "$RST"
+    hdr_lines+=("$s")
   elif (( OS_WINDOWS )); then
-    printf -v s '%ssource: NVIDIA dGPU on AC · Windows WMI battery draw when unplugged (no platform power)%s' "$GR" "$RST"
+    printf -v s '%ssource: NVIDIA dGPU on AC · WMI battery draw when unplugged (no CPU power)%s' "$GR" "$RST"
+    hdr_lines+=("$s")
+    printf -v s '%s  run LibreHardwareMonitor (admin, Publish to WMI on) to add CPU package power.%s' "$GR" "$RST"
     hdr_lines+=("$s")
   elif (( WIN_SHELL )); then
     printf -v s '%s⚠ Windows shell but no PowerShell on PATH; GPU-only (see README).%s' "$Y" "$RST"
@@ -643,9 +691,11 @@ while :; do
   # directly and ignore RAPL/GPU; on AC the total is CPU platform (RAPL) + dGPU.
   # On a Raspberry Pi the PMIC's whole-board sum stands in for the platform
   # power (apu holds it, since it integrates identically to the AMD APU sensor).
+  # On Windows the LHM/OHM CPU-package sensor feeds the same instantaneous slot.
   on_bat=0; pw=0; apu=-1
   if on_battery; then on_bat=1; src=BAT; pw=$(bat_uw); pw=${pw:-0}
   elif (( RPI_OK )); then src=PI; apu=$(rpi_w); apu=${apu:--1}
+  elif (( WIN_CPU_OK )); then src=AC; apu=$(win_cpu_w); apu=${apu:--1}
   else src=AC; (( RAPL_OK )) || { apu=$(apu_w); apu=${apu:--1}; }
   fi
 
