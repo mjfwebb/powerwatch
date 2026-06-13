@@ -35,7 +35,7 @@
 export LC_ALL=C
 
 # Bump on release. install.sh greps this line to report what an update did.
-VERSION=0.2.0
+VERSION=0.3.0
 
 interval=5
 RATE="${POWERWATCH_RATE:-2.50}"
@@ -150,6 +150,35 @@ have_curl=0; command -v curl >/dev/null 2>&1 && have_curl=1
 (( LIVE && (!have_jq || !have_curl) )) && LIVE=0
 
 POWERCAP=/sys/class/powercap
+
+# --- Windows detection -------------------------------------------------------
+# MSYS2/Git Bash and Cygwin run on Windows natively; WSL2 runs a Linux kernel
+# on Windows hardware. In all three cases, /sys battery and RAPL paths either
+# don't exist or aren't populated, so we use Windows PowerShell WMI instead.
+# WIN_SHELL marks "running on Windows"; OS_WINDOWS marks "and we found a
+# PowerShell to query WMI with". They differ when, e.g., Cygwin's default PATH
+# omits System32 so no powershell.exe is reachable: we then warn rather than
+# silently fall through to the Linux RAPL/udev advice, which is nonsense here.
+OS_WINDOWS=0; WIN_SHELL=0; PSEXE=""
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*) WIN_SHELL=1 ;;
+  *)
+    if grep -qi microsoft /proc/version 2>/dev/null; then WIN_SHELL=1; fi ;;
+esac
+if (( WIN_SHELL )); then
+  if   command -v pwsh.exe       >/dev/null 2>&1; then PSEXE="pwsh.exe"
+  elif command -v powershell.exe >/dev/null 2>&1; then PSEXE="powershell.exe"
+  elif command -v pwsh           >/dev/null 2>&1; then PSEXE="pwsh"
+  elif command -v powershell     >/dev/null 2>&1; then PSEXE="powershell"
+  fi
+  if [[ -n $PSEXE ]]; then
+    OS_WINDOWS=1
+  else
+    printf 'powerwatch: Windows shell detected but no PowerShell on PATH; battery\n' >&2
+    printf '  power needs powershell.exe or pwsh.exe (add Windows\\System32 to PATH).\n' >&2
+    printf '  Falling back to GPU-only.\n' >&2
+  fi
+fi
 
 # discover the battery and AC-adapter sysfs nodes by type, since the names vary
 # across machines (BAT0/BAT1, AC/ADP1/ACAD, ...). Left empty if absent (desktop).
@@ -281,13 +310,46 @@ rpi_w() {
 # Battery draw in µW (matching power_now's unit), from whichever source was
 # discovered: power_now directly, or current_now (µA) × voltage_now (µV) / 1e6.
 bat_uw() {
-  if   [[ $BAT_MODE == power ]]; then cat "$BAT/power_now" 2>/dev/null
+  if (( OS_WINDOWS )); then
+    echo $(( ${_WIN_DISCHARGE_MW:-0} * 1000 ))
+  elif [[ $BAT_MODE == power ]]; then
+    cat "$BAT/power_now" 2>/dev/null
   elif [[ $BAT_MODE == iv    ]]; then
     awk -v v="$(<"$BAT/voltage_now")" '{printf "%.0f", $1*v/1e6}' "$BAT/current_now" 2>/dev/null
   fi
 }
 
-on_battery() { [[ -r "$AC/online" && $(<"$AC/online") == 0 ]]; }
+# Cache of the last Windows WMI query: the discharge rate (read by bat_uw, so it
+# needs no second PowerShell call) and the AC-online flag (returned to the caller).
+# A PowerShell spawn costs hundreds of ms, so on a Windows box it would dominate a
+# short interval; we query at most every WIN_POLL seconds and reuse the cache in
+# between. Power and AC state vary slowly, so this is invisible at any sane
+# interval while keeping `powerwatch 1` responsive. Energy still integrates over
+# the real dt, so the throttle never distorts the totals.
+WIN_POLL="${POWERWATCH_WIN_POLL:-5}"
+_WIN_DISCHARGE_MW=0; _WIN_ONLINE=1; _WIN_LAST_POLL=0
+on_battery() {
+  if (( OS_WINDOWS )); then
+    local nowf=${EPOCHREALTIME%.*}        # integer seconds (LC_ALL=C ensures '.')
+    if (( nowf - _WIN_LAST_POLL >= WIN_POLL )); then
+      local out
+      # shellcheck disable=SC2016  # $s/$r/$p are PowerShell variables, not shell
+      out=$($PSEXE -NoProfile -Command '
+        $s = Get-CimInstance -Namespace root\WMI -ClassName BatteryStatus `
+               -ErrorAction SilentlyContinue | Select-Object -First 1
+        $r = if ($s -and $s.DischargeRate) { [int]$s.DischargeRate } else { 0 }
+        $p = if (-not $s -or $s.PowerOnline) { 1 } else { 0 }
+        "$r $p"
+      ' 2>/dev/null | tr -d '\r')
+      _WIN_DISCHARGE_MW=${out%% *}; _WIN_DISCHARGE_MW=${_WIN_DISCHARGE_MW//[^0-9]/}
+      [[ ${out#* } == 0 ]] && _WIN_ONLINE=0 || _WIN_ONLINE=1
+      _WIN_LAST_POLL=$nowf
+    fi
+    (( _WIN_ONLINE == 0 ))
+  else
+    [[ -r "$AC/online" && $(<"$AC/online") == 0 ]]
+  fi
+}
 
 # --- live electricity pricing (pluggable JSON provider) --------------------
 # Expand the URL template for a given date (YYYY-MM-DD).
@@ -446,6 +508,12 @@ build_header() {
     hdr_lines+=("$s")
   elif (( RPI_OK )); then
     printf -v s '%ssource: Raspberry Pi whole-board power (vcgencmd pmic_read_adc)%s' "$GR" "$RST"
+    hdr_lines+=("$s")
+  elif (( OS_WINDOWS )); then
+    printf -v s '%ssource: Windows WMI BatteryStatus on battery · NVIDIA dGPU on AC (no platform power)%s' "$GR" "$RST"
+    hdr_lines+=("$s")
+  elif (( WIN_SHELL )); then
+    printf -v s '%s⚠ Windows shell but no PowerShell on PATH; GPU-only (see README).%s' "$Y" "$RST"
     hdr_lines+=("$s")
   else
     printf -v s '%s⚠ RAPL not readable; run the udev rule (see README) for CPU power.%s' "$Y" "$RST"

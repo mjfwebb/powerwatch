@@ -7,11 +7,12 @@ How each power source is read, what it covers, and what it misses. Part of the
 
 | Source | What it covers | Notes |
 |--------|----------------|-------|
-| Intel RAPL `psys` (`/sys/class/powercap/intel-rapl:*`) | CPU package, iGPU, DRAM, VRMs | Read as a monotonic µJ energy counter, so interval energy is exact. Root-only by default (see the udev setup in the README). |
-| NVIDIA dGPU (`nvidia-smi`) | The discrete GPU | On its own rail, not in RAPL. It runtime-suspends in hybrid/Optimus mode and reports no data, which powerwatch counts as ~0 W. |
-| AMD APU `slowPPT` (`amdgpu` hwmon `power1_input`) | The SoC package (CPU + iGPU) | Fallback used on Ryzen APUs (e.g. the Steam Deck) where RAPL is root-only and excludes the iGPU. Read without root as instantaneous watts and integrated over the interval. |
-| Raspberry Pi PMIC (`vcgencmd pmic_read_adc`) | The whole board (SoC, RAM, USB, I/O rails) | Used on a Pi (5 and up), which has neither RAPL nor an `amdgpu` sensor. The PMIC reports every supply rail's current and voltage; powerwatch sums current×voltage across the rails. Read without root as instantaneous watts and integrated over the interval. |
-| Battery `power_now` | The whole laptop (CPU, GPU, screen, everything) | Only valid on battery. When unplugged it supersedes the estimate above and is genuinely accurate. Machines without `power_now` (e.g. the Steam Deck) are read from `current_now × voltage_now` instead. |
+| Intel RAPL `psys` (`/sys/class/powercap/intel-rapl:*`) | CPU package, iGPU, DRAM, VRMs | Read as a monotonic µJ energy counter, so interval energy is exact. Root-only by default (see the udev setup in the README). Linux only. |
+| NVIDIA dGPU (`nvidia-smi`) | The discrete GPU | On its own rail, not in RAPL. It runtime-suspends in hybrid/Optimus mode and reports no data, which powerwatch counts as ~0 W. Works on Linux and Windows. |
+| AMD APU `slowPPT` (`amdgpu` hwmon `power1_input`) | The SoC package (CPU + iGPU) | Fallback used on Ryzen APUs (e.g. the Steam Deck) where RAPL is root-only and excludes the iGPU. Read without root as instantaneous watts and integrated over the interval. Linux only. |
+| Raspberry Pi PMIC (`vcgencmd pmic_read_adc`) | The whole board (SoC, RAM, USB, I/O rails) | Used on a Pi (5 and up), which has neither RAPL nor an `amdgpu` sensor. The PMIC reports every supply rail's current and voltage; powerwatch sums current×voltage across the rails. Read without root as instantaneous watts and integrated over the interval. Linux only. |
+| Battery `power_now` | The whole laptop (CPU, GPU, screen, everything) | Only valid on battery. When unplugged it supersedes the estimate above and is genuinely accurate. Machines without `power_now` (e.g. the Steam Deck) are read from `current_now × voltage_now` instead. Linux only. |
+| Windows WMI `BatteryStatus.DischargeRate` | The whole laptop (same coverage as `power_now`) | Used on Windows 11 (MSYS2/Git Bash, Cygwin, WSL). Queried via PowerShell `Get-CimInstance`, at most once every `POWERWATCH_WIN_POLL` seconds (default 5) since each spawn is costly; the value is reused between polls. Reports instantaneous discharge in mW, which powerwatch multiplies to µW for the same integration path as Linux. |
 
 > **On AC this is a compute estimate, not wall draw.** RAPL plus dGPU leaves out
 > the display backlight, the AC adapter's roughly 10-15% conversion loss, USB
@@ -20,6 +21,8 @@ How each power source is read, what it covers, and what it misses. Part of the
 > Tasmota, Zigbee). On battery, `power_now` is accurate for the laptop itself.
 
 ## How it reads things
+
+### Linux
 
 | Value | Source |
 |-------|--------|
@@ -30,6 +33,15 @@ How each power source is read, what it covers, and what it misses. Part of the
 | dGPU power | `nvidia-smi -q -d POWER` ("Power Draw"); absent means 0 W (suspended) |
 | on-battery total | the discovered battery's `power_now` (µW), or `current_now × voltage_now` where absent |
 | AC vs battery | the AC adapter's `online` flag |
+
+### Windows 11 (MSYS2/Git Bash, Cygwin, WSL)
+
+| Value | Source |
+|-------|--------|
+| CPU platform power | not available (no RAPL access); shown as 0 W on AC |
+| dGPU power | `nvidia-smi -q -d POWER` ("Power Draw"), same as Linux |
+| on-battery total | `root\WMI\BatteryStatus.DischargeRate` (mW) via `Get-CimInstance` |
+| AC vs battery | `root\WMI\BatteryStatus.PowerOnline` |
 
 Interval timing uses bash 5's `EPOCHREALTIME`, and the script forces `LC_ALL=C`
 so a locale comma decimal separator does not corrupt the arithmetic.
