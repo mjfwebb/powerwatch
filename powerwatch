@@ -382,8 +382,10 @@ _WIN_BAT_PS='$s=Get-CimInstance -Namespace root\WMI -ClassName BatteryStatus -Er
 if (( WIN_CPU_OK )); then
   _WIN_CPU_PS="\$c=0; \$cs=Get-CimInstance -Namespace root/$WIN_CPU_NS -ClassName Sensor -ErrorAction SilentlyContinue|Where-Object {\$_.SensorType -eq 'Power' -and \$_.Name -eq '$WIN_CPU_NAME'}|Select-Object -First 1; if(\$cs){\$c=[double]\$cs.Value}; "
 else
+  # shellcheck disable=SC2016  # $c is a PowerShell variable, not shell
   _WIN_CPU_PS='$c=0; '
 fi
+# shellcheck disable=SC2016  # $r/$p/$c are PowerShell variables, not shell
 WIN_POLL_PS="$_WIN_BAT_PS$_WIN_CPU_PS"'"$r $p $c"'
 
 on_battery() {
