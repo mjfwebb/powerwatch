@@ -35,7 +35,7 @@
 export LC_ALL=C
 
 # Bump on release. install.sh greps this line to report what an update did.
-VERSION=0.1.0
+VERSION=0.2.0
 
 interval=5
 RATE="${POWERWATCH_RATE:-2.50}"
