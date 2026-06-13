@@ -41,7 +41,7 @@ install -Dm755 powerwatch ~/.local/bin/powerwatch
 The installed copy is a snapshot; re-run either line after pulling or editing
 the script to update it.
 
-### Windows
+### Windows 11
 
 Windows 11 is supported, with one requirement: powerwatch is a bash script, so
 you run it from a bash shell, either **Git Bash** (ships with
