@@ -35,7 +35,7 @@
 export LC_ALL=C
 
 # Bump on release. install.sh greps this line to report what an update did.
-VERSION=0.2.0
+VERSION=0.3.0
 
 interval=5
 RATE="${POWERWATCH_RATE:-2.50}"
@@ -150,6 +150,25 @@ have_curl=0; command -v curl >/dev/null 2>&1 && have_curl=1
 (( LIVE && (!have_jq || !have_curl) )) && LIVE=0
 
 POWERCAP=/sys/class/powercap
+
+# --- Windows detection -------------------------------------------------------
+# MSYS2/Git Bash and Cygwin run on Windows natively; WSL2 runs a Linux kernel
+# on Windows hardware. In all three cases, /sys battery and RAPL paths either
+# don't exist or aren't populated, so we use Windows PowerShell WMI instead.
+OS_WINDOWS=0; PSEXE=""
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*) OS_WINDOWS=1 ;;
+  *)
+    if grep -qi microsoft /proc/version 2>/dev/null; then OS_WINDOWS=1; fi ;;
+esac
+if (( OS_WINDOWS )); then
+  if   command -v pwsh.exe       >/dev/null 2>&1; then PSEXE="pwsh.exe"
+  elif command -v powershell.exe >/dev/null 2>&1; then PSEXE="powershell.exe"
+  elif command -v pwsh           >/dev/null 2>&1; then PSEXE="pwsh"
+  elif command -v powershell     >/dev/null 2>&1; then PSEXE="powershell"
+  else OS_WINDOWS=0   # no PowerShell found; fall back to Linux mode
+  fi
+fi
 
 # discover the battery and AC-adapter sysfs nodes by type, since the names vary
 # across machines (BAT0/BAT1, AC/ADP1/ACAD, ...). Left empty if absent (desktop).
@@ -281,13 +300,36 @@ rpi_w() {
 # Battery draw in µW (matching power_now's unit), from whichever source was
 # discovered: power_now directly, or current_now (µA) × voltage_now (µV) / 1e6.
 bat_uw() {
-  if   [[ $BAT_MODE == power ]]; then cat "$BAT/power_now" 2>/dev/null
+  if (( OS_WINDOWS )); then
+    echo $(( ${_WIN_DISCHARGE_MW:-0} * 1000 ))
+  elif [[ $BAT_MODE == power ]]; then
+    cat "$BAT/power_now" 2>/dev/null
   elif [[ $BAT_MODE == iv    ]]; then
     awk -v v="$(<"$BAT/voltage_now")" '{printf "%.0f", $1*v/1e6}' "$BAT/current_now" 2>/dev/null
   fi
 }
 
-on_battery() { [[ -r "$AC/online" && $(<"$AC/online") == 0 ]]; }
+# Per-tick cache for the Windows WMI discharge rate; set as a side effect of
+# on_battery() so bat_uw() doesn't need a second PowerShell call.
+_WIN_DISCHARGE_MW=0
+on_battery() {
+  if (( OS_WINDOWS )); then
+    local out
+    # shellcheck disable=SC2016  # $s/$r/$p are PowerShell variables, not shell
+    out=$($PSEXE -NoProfile -Command '
+      $s = Get-CimInstance -Namespace root\WMI -ClassName BatteryStatus `
+             -ErrorAction SilentlyContinue | Select-Object -First 1
+      $r = if ($s -and $s.DischargeRate) { [int]$s.DischargeRate } else { 0 }
+      $p = if (-not $s -or $s.PowerOnline) { 1 } else { 0 }
+      "$r $p"
+    ' 2>/dev/null | tr -d '\r')
+    _WIN_DISCHARGE_MW=${out%% *}
+    _WIN_DISCHARGE_MW=${_WIN_DISCHARGE_MW//[^0-9]/}
+    [[ ${out#* } == 0 ]]
+  else
+    [[ -r "$AC/online" && $(<"$AC/online") == 0 ]]
+  fi
+}
 
 # --- live electricity pricing (pluggable JSON provider) --------------------
 # Expand the URL template for a given date (YYYY-MM-DD).
@@ -446,6 +488,9 @@ build_header() {
     hdr_lines+=("$s")
   elif (( RPI_OK )); then
     printf -v s '%ssource: Raspberry Pi whole-board power (vcgencmd pmic_read_adc)%s' "$GR" "$RST"
+    hdr_lines+=("$s")
+  elif (( OS_WINDOWS )); then
+    printf -v s '%ssource: Windows WMI BatteryStatus on battery · NVIDIA dGPU on AC (no platform power)%s' "$GR" "$RST"
     hdr_lines+=("$s")
   else
     printf -v s '%s⚠ RAPL not readable; run the udev rule (see README) for CPU power.%s' "$Y" "$RST"
