@@ -4,13 +4,14 @@ A live terminal monitor that turns a Linux laptop's power sensors into
 cumulative energy (Wh/kWh), a running electricity cost, and a projected
 daily/monthly run rate. It reads CPU/SoC power from Intel RAPL or, on AMD APUs
 (e.g. the Steam Deck), the `amdgpu` sensor, adds an NVIDIA dGPU if present, and
-uses the battery's own draw when unplugged.
+uses the battery's own draw when unplugged. On a Raspberry Pi 5 it reads
+whole-board power from the PMIC instead.
 
 ![powerwatch output: a pinned reverse-video header bar above scrolling rows of timestamped watts (green when low, yellow when higher), the cpu+gpu split, session Wh and cost, the live rate, a run-rate projection, and a sparkline](example.svg)
 
 Each refresh shows current watts, session energy and cost, a projected
-`~kWh/day` and `~cost/month`, and a sparkline of recent power, tagged `[AC]` or
-`[BAT]` for the live measurement path.
+`~kWh/day` and `~cost/month`, and a sparkline of recent power, tagged `[AC]`,
+`[BAT]`, or `[PI]` for the live measurement path.
 
 The header is pinned to the top while the rows scroll beneath it. Press
 **Shift+Tab** to switch to a scrolling layout that keeps history in your
@@ -53,7 +54,9 @@ sudo chmod -R a+r /sys/devices/virtual/powercap/   # apply now, without a reboot
 
 Without it powerwatch still runs, but on AC it sees only the GPU and reads low
 (it says so in the header); on battery it is accurate either way. **AMD APUs
-need no setup**: their `amdgpu` sensor is readable already. See
+need no setup**: their `amdgpu` sensor is readable already. **A Raspberry Pi 5
+needs no setup** either: its PMIC is read through `vcgencmd` without root, and
+reports whole-board power. See
 [what powerwatch measures](docs/sensors.md) for the per-source details and why
 the Intel sensor is root-only.
 
