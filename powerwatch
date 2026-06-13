@@ -35,7 +35,7 @@
 export LC_ALL=C
 
 # Bump on release. install.sh greps this line to report what an update did.
-VERSION=0.1.0
+VERSION=0.2.0
 
 interval=5
 RATE="${POWERWATCH_RATE:-2.50}"
@@ -200,6 +200,22 @@ if (( ! RAPL_OK )); then
   done
 fi
 
+# --- Raspberry Pi whole-board power, via the PMIC ---------------------------
+# A Pi (5 and up) has neither RAPL nor an amdgpu sensor; its on-board PMIC
+# instead exposes every supply rail's current and voltage through
+# `vcgencmd pmic_read_adc`. Summing current×voltage across the rails is the
+# documented way to get the board's total internal draw, and it reads without
+# root. Like the AMD APU sensor it is an instantaneous power, not a monotonic
+# counter, so the main loop integrates it over the interval. Only used when no
+# RAPL counter and no amdgpu APU sensor were found.
+RPI_OK=0
+if (( ! RAPL_OK )) && [[ -z $APU_FILE ]] && command -v vcgencmd >/dev/null 2>&1; then
+  # Confirm the PMIC actually answers: only Pi 5-class boards expose pmic_read_adc.
+  # Older Pis (or a missing firmware mailbox) print nothing or an error, leaving
+  # the GPU-only/battery path unchanged.
+  vcgencmd pmic_read_adc 2>/dev/null | grep -q 'current(' && RPI_OK=1
+fi
+
 have_nvidia=0; command -v nvidia-smi >/dev/null 2>&1 && have_nvidia=1
 
 # --- colors -----------------------------------------------------------------
@@ -248,6 +264,19 @@ gpu_w() {
 
 # AMD APU SoC power in watts (instantaneous), or empty when no APU sensor.
 apu_w() { [[ -n $APU_FILE && -r $APU_FILE ]] && awk '{printf "%.3f", $1/1e6}' "$APU_FILE" 2>/dev/null; }
+
+# Raspberry Pi whole-board power in watts (instantaneous), or empty when there
+# is no PMIC. The PMIC lists each rail's current and voltage on separate lines
+# (NAME_A current(n)=…A / NAME_V volt(n)=…V); we pair them by the rail name and
+# sum current×voltage. Rails exposed as voltage-only (EXT5V, BATT) have no
+# current partner and so drop out of the sum, as they should.
+rpi_w() {
+  (( RPI_OK )) || return
+  vcgencmd pmic_read_adc 2>/dev/null | awk '
+    /current\(/ { n=$1; sub(/_A$/,"",n); v=$NF; sub(/.*=/,"",v); a[n]=v+0 }
+    /volt\(/    { n=$1; sub(/_V$/,"",n); v=$NF; sub(/.*=/,"",v); u[n]=v+0 }
+    END { for (n in a) p += a[n]*u[n]; if (p > 0) printf "%.3f", p }'
+}
 
 # Battery draw in µW (matching power_now's unit), from whichever source was
 # discovered: power_now directly, or current_now (µA) × voltage_now (µV) / 1e6.
@@ -415,6 +444,9 @@ build_header() {
   elif [[ -n $APU_FILE ]]; then
     printf -v s '%ssource: AMD APU SoC power (amdgpu slowPPT) on AC · battery draw when unplugged%s' "$GR" "$RST"
     hdr_lines+=("$s")
+  elif (( RPI_OK )); then
+    printf -v s '%ssource: Raspberry Pi whole-board power (vcgencmd pmic_read_adc)%s' "$GR" "$RST"
+    hdr_lines+=("$s")
   else
     printf -v s '%s⚠ RAPL not readable; run the udev rule (see README) for CPU power.%s' "$Y" "$RST"
     hdr_lines+=("$s")
@@ -531,8 +563,11 @@ while :; do
 
   # Battery discharge IS the true whole-machine power, so on battery we use it
   # directly and ignore RAPL/GPU; on AC the total is CPU platform (RAPL) + dGPU.
+  # On a Raspberry Pi the PMIC's whole-board sum stands in for the platform
+  # power (apu holds it, since it integrates identically to the AMD APU sensor).
   on_bat=0; pw=0; apu=-1
   if on_battery; then on_bat=1; src=BAT; pw=$(bat_uw); pw=${pw:-0}
+  elif (( RPI_OK )); then src=PI; apu=$(rpi_w); apu=${apu:--1}
   else src=AC; (( RAPL_OK )) || { apu=$(apu_w); apu=${apu:--1}; }
   fi
 
@@ -546,7 +581,8 @@ while :; do
       if (ob) { cw = 0; tot = pw / 1e6; add_j = tot * dt }
       else {
         # CPU-platform watts and their interval energy: from the RAPL counter
-        # delta if usable, else the AMD APU instantaneous power, else nothing.
+        # delta if usable, else the AMD APU / Raspberry Pi instantaneous power,
+        # else nothing.
         if (rok && cj != "" && pj != "") { d = cj - pj; if (d < 0) d += rmax; cw = (d/1e6)/dt; cpuj = d/1e6 }
         else if (apu >= 0)               { cw = apu; cpuj = cw*dt }
         else                             { cw = 0;   cpuj = 0 }
@@ -564,6 +600,7 @@ while :; do
   hist+=("$totint"); (( ${#hist[@]} > HIST_MAX )) && hist=("${hist[@]: -HIST_MAX}")
 
   if [[ $src == BAT ]]; then detail="batt draw (real)"
+  elif [[ $src == PI ]]; then detail="whole board"
   else printf -v detail '%4.1f + %4.1f' "$cw" "$g"; fi
 
   (( rate_src == 0 )) && rtag=L || rtag=F

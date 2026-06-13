@@ -219,6 +219,45 @@ EOF
   [ -z "$output" ]
 }
 
+# --- rpi_w: Raspberry Pi whole-board power (PMIC current×voltage sum) ---------
+
+# A fake vcgencmd serving a trimmed pmic_read_adc dump: three rails with a
+# matched current/voltage pair, plus a voltage-only rail (EXT5V) that must drop
+# out of the sum because it has no current partner.
+stub_vcgencmd() {
+  cat >"$STUB_DIR/vcgencmd" <<'EOF'
+#!/usr/bin/env bash
+cat <<'OUT'
+ 3V7_WL_SW_A current(0)=0.10000000A
+   3V3_SYS_A current(1)=0.20000000A
+   VDD_CORE_A current(7)=1.00000000A
+ 3V7_WL_SW_V volt(8)=4.00000000V
+   3V3_SYS_V volt(9)=3.00000000V
+   VDD_CORE_V volt(15)=0.80000000V
+      EXT5V_V volt(24)=5.00000000V
+OUT
+EOF
+  chmod +x "$STUB_DIR/vcgencmd"
+  export PATH="$STUB_DIR:$PATH"
+}
+
+@test "rpi_w sums the PMIC per-rail current×voltage into watts" {
+  stub_vcgencmd
+  source "$PW"
+  RPI_OK=1
+  run rpi_w
+  # 0.1×4 + 0.2×3 + 1.0×0.8 = 1.800; the voltage-only EXT5V rail is excluded
+  [ "$output" = "1.800" ]
+}
+
+@test "rpi_w is empty when no PMIC was detected" {
+  stub_vcgencmd
+  source "$PW"
+  RPI_OK=0
+  run rpi_w
+  [ -z "$output" ]
+}
+
 # --- bat_uw: battery draw in µW, by discovered mode --------------------------
 
 @test "bat_uw passes power_now through in power mode" {
