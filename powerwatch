@@ -257,33 +257,35 @@ fi
 
 have_nvidia=0; command -v nvidia-smi >/dev/null 2>&1 && have_nvidia=1
 
-# --- Windows CPU-package power, via LibreHardwareMonitor / OpenHardwareMonitor
+# --- Windows CPU-package power, via the LibreHardwareMonitor web server ------
 # Windows exposes no readable RAPL counter, so platform power needs a helper.
-# LibreHardwareMonitor (LHM) and the older OpenHardwareMonitor (OHM) publish
-# their sensors over WMI when "Publish to WMI" is enabled and the app runs (LHM
-# needs admin to read CPU power). We look for a Power sensor named "CPU Package"
-# (the whole-package draw); failing that, the first CPU* Power sensor. The value
-# is an instantaneous watt reading, so the main loop integrates it over the
-# interval exactly as it does the AMD APU / Raspberry Pi sensors. The discovered
-# namespace and sensor name drive the per-tick query folded into on_battery().
-WIN_CPU_OK=0; WIN_CPU_NS=""; WIN_CPU_NAME=""
+# LibreHardwareMonitor (LHM), run with its Remote Web Server on, serves the full
+# sensor tree as JSON at http://localhost:8085/data.json. (Its WMI provider is
+# not reliably present in current builds, so we use the web server instead.) We
+# walk the tree once at startup for the CPU "Package" power node — identified by
+# a SensorId under /amdcpu or /intelcpu — and remember its stable SensorId. The
+# per-tick value is an instantaneous watt reading, so the main loop integrates
+# it over the interval exactly as it does the AMD APU / Raspberry Pi sensors.
+# PowerShell fetches and parses the JSON natively, so this needs no curl or jq.
+LHM_URL="${POWERWATCH_LHM_URL:-http://localhost:8085/data.json}"
+WIN_CPU_OK=0; WIN_CPU_ID=""
 if (( OS_WINDOWS )); then
-  # shellcheck disable=SC2016  # $ns/$p/$sel are PowerShell variables, not shell
-  det=$($PSEXE -NoProfile -Command '
-    foreach ($ns in "LibreHardwareMonitor","OpenHardwareMonitor") {
-      $p = Get-CimInstance -Namespace "root/$ns" -ClassName Sensor `
-             -ErrorAction SilentlyContinue |
-           Where-Object { $_.SensorType -eq "Power" -and $_.Name -like "CPU*" }
-      if ($p) {
-        $sel = $p | Where-Object Name -eq "CPU Package" | Select-Object -First 1
-        if (-not $sel) { $sel = $p | Select-Object -First 1 }
-        "$ns|$($sel.Name)"; break
+  # shellcheck disable=SC2016  # $d/$n/$env: are PowerShell, not shell, vars
+  WIN_CPU_ID=$(LHM_URL="$LHM_URL" $PSEXE -NoProfile -Command '
+    $ErrorActionPreference = "SilentlyContinue"
+    $d = Invoke-RestMethod -Uri $env:LHM_URL -TimeoutSec 4
+    $script:hit = ""
+    function Find($n) {
+      if ($script:hit) { return }
+      if ($n.Type -eq "Power" -and $n.SensorId -match "/(amd|intel)cpu/" `
+          -and ($n.Text -eq "Package" -or $n.Text -eq "CPU Package")) {
+        $script:hit = $n.SensorId; return
       }
+      foreach ($c in $n.Children) { Find $c }
     }
+    if ($d) { Find $d; $script:hit }
   ' 2>/dev/null | tr -d '\r')
-  if [[ -n $det ]]; then
-    WIN_CPU_NS=${det%%|*}; WIN_CPU_NAME=${det#*|}; WIN_CPU_OK=1
-  fi
+  [[ -n $WIN_CPU_ID ]] && WIN_CPU_OK=1
 fi
 
 # --- colors -----------------------------------------------------------------
@@ -372,15 +374,22 @@ win_cpu_w() { local w=${_WIN_CPU_W:-}; [[ $w =~ ^[0-9]+(\.[0-9]+)?$ ]] && printf
 WIN_POLL="${POWERWATCH_WIN_POLL:-5}"
 _WIN_DISCHARGE_MW=0; _WIN_ONLINE=1; _WIN_LAST_POLL=0; _WIN_CPU_W=""
 
-# Assemble the per-poll PowerShell once: battery discharge + AC-online flag, and
-# (when an LHM/OHM CPU sensor was found) the CPU-package watts, in one spawn that
-# echoes "<dischargeMW> <online01> <cpuW>". The battery half is a single-quoted
-# literal so its PowerShell $vars survive bash; the CPU half is double-quoted to
-# interpolate the discovered namespace/sensor name, with PowerShell $ escaped.
+# Assemble the per-poll PowerShell once: battery discharge + AC-online flag (from
+# WMI), and (when an LHM CPU sensor was found) the CPU-package watts (from the web
+# server JSON), in one spawn that echoes "<dischargeMW> <online01> <cpuW>". Both
+# halves are single-quoted literals so their PowerShell $vars survive bash; the
+# URL and sensor id reach PowerShell as $env vars set on the call in on_battery.
+# The CPU watts are emitted as a cleaned numeric string (locale comma -> dot), not
+# cast to [double], so a non-invariant PowerShell culture can't corrupt them.
 # shellcheck disable=SC2016  # $s/$r/$p are PowerShell variables, not shell
 _WIN_BAT_PS='$s=Get-CimInstance -Namespace root\WMI -ClassName BatteryStatus -ErrorAction SilentlyContinue|Select-Object -First 1; $r=if($s -and $s.DischargeRate){[int]$s.DischargeRate}else{0}; $p=if(-not $s -or $s.PowerOnline){1}else{0}; '
 if (( WIN_CPU_OK )); then
-  _WIN_CPU_PS="\$c=0; \$cs=Get-CimInstance -Namespace root/$WIN_CPU_NS -ClassName Sensor -ErrorAction SilentlyContinue|Where-Object {\$_.SensorType -eq 'Power' -and \$_.Name -eq '$WIN_CPU_NAME'}|Select-Object -First 1; if(\$cs){\$c=[double]\$cs.Value}; "
+  # Re-find the CPU Package node by vendor + name each poll, rather than passing
+  # its SensorId through the environment: a leading-slash id like /amdcpu/0/power/0
+  # gets mangled into a Windows path by MSYS env conversion. The match criteria
+  # live inside this single-quoted literal, which conversion leaves alone.
+  # shellcheck disable=SC2016  # PowerShell variables ($c/$d/$env:), not shell
+  _WIN_CPU_PS='$c=0; try { $d=Invoke-RestMethod -Uri $env:LHM_URL -TimeoutSec 3; $script:cv=""; function Find($n){ if($script:cv){return}; if($n.Type -eq "Power" -and $n.SensorId -match "/(amd|intel)cpu/" -and ($n.Text -eq "Package" -or $n.Text -eq "CPU Package")){ $script:cv=$n.Value; return }; foreach($x in $n.Children){ Find $x } }; Find $d; if($script:cv){ $c=($script:cv -replace "[^0-9.,]","") -replace ",","." } } catch {}; '
 else
   # shellcheck disable=SC2016  # $c is a PowerShell variable, not shell
   _WIN_CPU_PS='$c=0; '
@@ -393,7 +402,7 @@ on_battery() {
     local nowf=${EPOCHREALTIME%.*}        # integer seconds (LC_ALL=C ensures '.')
     if (( nowf - _WIN_LAST_POLL >= WIN_POLL )); then
       local out _r _p _c
-      out=$($PSEXE -NoProfile -Command "$WIN_POLL_PS" 2>/dev/null | tr -d '\r')
+      out=$(LHM_URL="$LHM_URL" $PSEXE -NoProfile -Command "$WIN_POLL_PS" 2>/dev/null | tr -d '\r')
       read -r _r _p _c <<<"$out"
       _WIN_DISCHARGE_MW=${_r//[^0-9]/}
       [[ $_p == 0 ]] && _WIN_ONLINE=0 || _WIN_ONLINE=1
@@ -565,12 +574,12 @@ build_header() {
     printf -v s '%ssource: Raspberry Pi whole-board power (vcgencmd pmic_read_adc)%s' "$GR" "$RST"
     hdr_lines+=("$s")
   elif (( OS_WINDOWS && WIN_CPU_OK )); then
-    printf -v s '%ssource: %s CPU package + NVIDIA dGPU on AC · WMI battery draw when unplugged%s' "$GR" "$WIN_CPU_NS" "$RST"
+    printf -v s '%ssource: LibreHardwareMonitor CPU package + NVIDIA dGPU on AC · WMI battery draw when unplugged%s' "$GR" "$RST"
     hdr_lines+=("$s")
   elif (( OS_WINDOWS )); then
     printf -v s '%ssource: NVIDIA dGPU on AC · WMI battery draw when unplugged (no CPU power)%s' "$GR" "$RST"
     hdr_lines+=("$s")
-    printf -v s '%s  run LibreHardwareMonitor (admin, Publish to WMI on) to add CPU package power.%s' "$GR" "$RST"
+    printf -v s '%s  run LibreHardwareMonitor (admin, Remote Web Server on) to add CPU package power.%s' "$GR" "$RST"
     hdr_lines+=("$s")
   elif (( WIN_SHELL )); then
     printf -v s '%s⚠ Windows shell but no PowerShell on PATH; GPU-only (see README).%s' "$Y" "$RST"

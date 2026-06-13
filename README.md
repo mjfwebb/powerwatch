@@ -49,9 +49,11 @@ you run it from a bash shell, either **Git Bash** (ships with
 PowerShell. The same one-liner installs it from within either shell. On battery
 it reads whole-machine draw from Windows WMI; on AC it adds CPU-package power
 when [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
-(or OpenHardwareMonitor) is running with "Publish to WMI" enabled, plus the GPU.
-LibreHardwareMonitor must run as administrator to read CPU power. Without it,
-powerwatch sees only the GPU on AC (no RAPL access on Windows). See
+is running with its **Remote Web Server** enabled (Options menu), plus the GPU.
+Run LibreHardwareMonitor as administrator so it can read CPU power, and leave it
+running. The server defaults to `http://localhost:8085/data.json`; point
+powerwatch elsewhere with `POWERWATCH_LHM_URL`. Without it, powerwatch sees only
+the GPU on AC (no RAPL access on Windows). See
 [what powerwatch measures](docs/sensors.md#windows-11-msys2git-bash-cygwin-wsl).
 
 Git Bash's `~/.local/bin` (`/c/Users/<you>/.local/bin`) is not on the Windows
