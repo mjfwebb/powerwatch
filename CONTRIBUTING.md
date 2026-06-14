@@ -102,10 +102,15 @@ from both sides:
 - The `release` job runs on every push to `main` (after tests and lint pass).
   When `powerwatch` changed since the last tag, it cuts a release.
 
-Patch releases are automatic: merging a fix to `main` makes the `release` job
-bump the patch level, commit it, and tag `vX.Y.Z`.
+Nobody edits the `VERSION=` line by hand. The `release` job computes the next
+number from the last tag and the bump level, writes it, commits, and tags
+`vX.Y.Z`. The bump level comes from a label on the PR:
 
-For a **minor or major** release, edit the `VERSION=` line directly on `main`
-(a maintainer push, not a PR) to the intended `X.Y.0`. The `release` job sees
-the version already ahead of the last tag and just tags it, rather than
-auto-bumping the patch.
+| PR label | Bump | Use for |
+|----------|------|---------|
+| _(none)_ | patch | bug fixes, internal changes |
+| `bump:minor` | minor | new user-facing behavior |
+| `bump:major` | major | breaking changes |
+
+So a normal fix just merges. For a minor or major release, add the matching
+label to the PR before merging; `major` wins over `minor` if both are present.

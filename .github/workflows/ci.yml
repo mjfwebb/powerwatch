@@ -51,11 +51,12 @@ jobs:
           fi
           echo "VERSION untouched"
 
-  # On main, cut a release when powerwatch changed since the last tag: ensure a
-  # VERSION bump and tag it. Patch bumps are automatic; a minor/major release is
-  # a manual VERSION edit on main (allowed there), which this job then just tags
-  # rather than bumping again. Runs only after tests and lint pass, so a broken
-  # main is never tagged.
+  # On main, cut a release when powerwatch changed since the last tag. CI owns
+  # the version end to end: the new number is computed from the last tag, the
+  # bump level comes from the merged PR's label (bump:major / bump:minor, else
+  # patch), and the job writes VERSION, commits, and tags vX.Y.Z. Nobody edits
+  # VERSION by hand. Runs only after tests and lint pass, so a broken main is
+  # never tagged.
   release:
     name: release tag
     if: github.event_name == 'push'
@@ -63,14 +64,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
-      - name: Bump patch and tag
+      - name: Compute version, bump, and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ver() { sed -n 's/^VERSION=//p' powerwatch | head -n1; }
           last_tag=$(git describe --tags --abbrev=0 2>/dev/null || true)
           if [[ -n $last_tag ]]; then
             if git diff --quiet "$last_tag" HEAD -- powerwatch; then
@@ -80,20 +83,30 @@ jobs:
           else
             last_ver=0.0.0
           fi
-          cur_ver=$(ver)
-          if [[ $cur_ver != "$last_ver" ]]; then
-            # VERSION was already moved on main (a manual minor/major); tag as-is.
-            new_ver=$cur_ver
-          else
-            # No manual bump: auto-increment the patch level.
-            IFS=. read -r major minor patch <<<"$cur_ver"
-            new_ver="$major.$minor.$((patch + 1))"
-            sed -i "s/^VERSION=.*/VERSION=$new_ver/" powerwatch
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -am "Bump version to $new_ver"
-            git push origin HEAD:main
+
+          # Bump level from the label on the PR(s) merged by this push; major
+          # wins over minor wins over the patch default. A direct push with no
+          # associated PR just gets a patch.
+          labels=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+                     --jq '.[].labels[].name' 2>/dev/null || true)
+          if   grep -qx 'bump:major' <<<"$labels"; then level=major
+          elif grep -qx 'bump:minor' <<<"$labels"; then level=minor
+          else                                          level=patch
           fi
+
+          IFS=. read -r major minor patch <<<"$last_ver"
+          case $level in
+            major) new_ver="$((major + 1)).0.0" ;;
+            minor) new_ver="$major.$((minor + 1)).0" ;;
+            patch) new_ver="$major.$minor.$((patch + 1))" ;;
+          esac
+          echo "releasing $last_ver -> $new_ver ($level)"
+
+          sed -i "s/^VERSION=.*/VERSION=$new_ver/" powerwatch
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Bump version to $new_ver"
+          git push origin HEAD:main
           git tag "v$new_ver"
           git push origin "v$new_ver"
           echo "released v$new_ver"
