@@ -83,5 +83,21 @@ Match the existing code:
 
 - Keep PRs focused; separate refactors from behavior changes.
 - Update the README when flags, env vars, or output change.
+- **Don't touch the `VERSION=` line in a feature or fix PR.** It is bumped
+  once per release in its own commit on `main` (see Releases). Two open PRs
+  that both edit it would otherwise conflict on the version, and merge order
+  would silently decide the number.
 - If the change touches the sensor paths (RAPL, battery, nvidia-smi), say how
   you tested it on real hardware, since CI can't.
+
+## Releases
+
+The version lives in one place: the `VERSION=` line in `powerwatch` (read, not
+executed, by `install.sh` to report what an update did). It is bumped on `main`
+in a dedicated commit, separate from the changes it ships, so that feature PRs
+never contend over it:
+
+1. Merge the change PRs (which leave `VERSION` untouched).
+2. On `main`, bump `VERSION` following semver: patch for fixes, minor for new
+   user-facing behavior.
+3. Tag the bump commit `vX.Y.Z`.
