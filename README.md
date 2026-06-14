@@ -39,7 +39,10 @@ install -Dm755 powerwatch ~/.local/bin/powerwatch
 ```
 
 The installed copy is a snapshot; re-run either line after pulling or editing
-the script to update it.
+the script to update it. Once installed, `powerwatch update` does this for you,
+re-running the installer in place. Extra args pass through to it (e.g.
+`powerwatch update --with-udev`), and `POWERWATCH_RAW_URL` selects a fork or
+branch.
 
 ### Windows 11
 
