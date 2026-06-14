@@ -37,6 +37,21 @@ export LC_ALL=C
 # Bump on release. install.sh greps this line to report what an update did.
 VERSION=0.4.1
 
+# Subcommand: self-update by re-running the installer. Handled before the
+# option loop below, which would otherwise read "update" as a bare interval.
+# Extra args pass through to install.sh (e.g. `powerwatch update --with-udev`);
+# POWERWATCH_RAW_URL selects a fork/branch, matching install.sh's own override.
+if [[ ${1:-} == update ]]; then
+  shift
+  command -v curl >/dev/null 2>&1 || { printf 'powerwatch: update needs curl on PATH\n' >&2; exit 1; }
+  raw_url=${POWERWATCH_RAW_URL:-https://raw.githubusercontent.com/mjfwebb/powerwatch/main}
+  # pipefail so a failed download surfaces instead of being masked by bash
+  # exiting 0 on empty stdin.
+  set -o pipefail
+  curl -fsSL "$raw_url/install.sh" | bash -s -- "$@"
+  exit $?
+fi
+
 interval=5
 RATE="${POWERWATCH_RATE:-2.50}"
 CURR="${POWERWATCH_CURR:-}"
@@ -68,6 +83,12 @@ usage() {
 powerwatch - live power and electricity-cost monitor for Linux laptops.
 
 Usage: powerwatch [interval_seconds] [options]      (default interval 5)
+       powerwatch update [install.sh args]          (self-update in place)
+
+Commands:
+  update             re-run the installer to update powerwatch in place.
+                     Extra args pass through to install.sh (e.g. --with-udev);
+                     POWERWATCH_RAW_URL selects a fork/branch.
 
 Options (each mirrors a POWERWATCH_* env var; flags win over the env):
   -n, --interval N   refresh interval in seconds         (also positional, default 5)
