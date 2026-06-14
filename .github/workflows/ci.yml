@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened]
+    # labeled/unlabeled so the bump-label check re-runs when a label is toggled
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -51,6 +52,52 @@ jobs:
           fi
           echo "VERSION untouched"
 
+  # Every PR must declare its release intent with exactly one bump:* label, so
+  # the release job on main knows how to version it (and nothing slips through
+  # on the implicit default). If none is set, post a comment asking for one and
+  # fail; the check re-runs when a label is added.
+  bump-label:
+    name: bump label
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      MARKER: <!-- bump-label-check -->
+    steps:
+      - name: Require exactly one bump:* label
+        run: |
+          set -euo pipefail
+          labels=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/labels" --jq '.[].name')
+          n=$(grep -cE '^bump:(major|minor|patch|none)$' <<<"$labels" || true)
+          if [[ $n -eq 1 ]]; then
+            echo "bump label present: $(grep -E '^bump:' <<<"$labels")"
+            # Resolved: drop any stale prompt comment.
+            id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+                   --jq "map(select(.body | startswith(\"$MARKER\"))) | .[-1].id // empty")
+            [[ -n $id ]] && gh api -X DELETE "repos/${GITHUB_REPOSITORY}/issues/comments/$id" || true
+            exit 0
+          fi
+
+          if [[ $n -gt 1 ]]; then
+            msg="This PR has more than one \`bump:*\` label. Keep exactly one."
+          else
+            msg="This PR has no release label. Add exactly one of \`bump:major\`, \`bump:minor\`, \`bump:patch\`, or \`bump:none\` so the release job knows how to version it after merge."
+          fi
+          body=$(printf '%s\n%s\n\nSee CONTRIBUTING.md (Releases) for what each level means.' "$MARKER" "$msg")
+          # Update the existing prompt comment if present, else create one.
+          id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+                 --jq "map(select(.body | startswith(\"$MARKER\"))) | .[-1].id // empty")
+          if [[ -n $id ]]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/$id" -f body="$body" >/dev/null
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -f body="$body" >/dev/null
+          fi
+          echo "::error::PR needs exactly one bump:* label"
+          exit 1
+
   # On main, cut a release when powerwatch changed since the last tag. CI owns
   # the version end to end: the new number is computed from the last tag, the
   # bump level comes from the merged PR's label (bump:major / bump:minor, else
@@ -85,13 +132,14 @@ jobs:
           fi
 
           # Bump level from the label on the PR(s) merged by this push; major
-          # wins over minor wins over the patch default. A direct push with no
-          # associated PR just gets a patch.
+          # wins over minor over patch. bump:none, or a direct push with no
+          # associated PR, releases nothing.
           labels=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
                      --jq '.[].labels[].name' 2>/dev/null || true)
           if   grep -qx 'bump:major' <<<"$labels"; then level=major
           elif grep -qx 'bump:minor' <<<"$labels"; then level=minor
-          else                                          level=patch
+          elif grep -qx 'bump:patch' <<<"$labels"; then level=patch
+          else echo "no bump:major/minor/patch label; skipping release"; exit 0
           fi
 
           IFS=. read -r major minor patch <<<"$last_ver"

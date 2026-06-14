@@ -104,13 +104,16 @@ from both sides:
 
 Nobody edits the `VERSION=` line by hand. The `release` job computes the next
 number from the last tag and the bump level, writes it, commits, and tags
-`vX.Y.Z`. The bump level comes from a label on the PR:
+`vX.Y.Z`. The bump level comes from a label on the PR, and every PR must carry
+exactly one (the `bump-label` check fails and comments otherwise):
 
-| PR label | Bump | Use for |
-|----------|------|---------|
-| _(none)_ | patch | bug fixes, internal changes |
-| `bump:minor` | minor | new user-facing behavior |
-| `bump:major` | major | breaking changes |
+| PR label | Effect | Use for |
+|----------|--------|---------|
+| `bump:patch` | patch release | bug fixes, internal changes |
+| `bump:minor` | minor release | new user-facing behavior |
+| `bump:major` | major release | breaking changes |
+| `bump:none` | no release | docs, CI, comments — nothing users run |
 
-So a normal fix just merges. For a minor or major release, add the matching
-label to the PR before merging; `major` wins over `minor` if both are present.
+`major` wins over `minor` over `patch` if several are somehow present. The
+`bump-label` check re-runs when you add or change the label, so a red check
+goes green once you pick one.
