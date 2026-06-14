@@ -35,7 +35,7 @@
 export LC_ALL=C
 
 # Bump on release. install.sh greps this line to report what an update did.
-VERSION=0.4.0
+VERSION=0.4.1
 
 interval=5
 RATE="${POWERWATCH_RATE:-2.50}"
@@ -449,7 +449,7 @@ eff_rate() {
   spot=$(spot_now)
   # fall back to the fixed rate unless the provider gave a real number
   # (a jq filter returning null/empty/garbage must not silently price at 0)
-  [[ $spot =~ ^[0-9]+(\.[0-9]+)?$ ]] || { printf '%s' "$RATE"; return 1; }
+  [[ $spot =~ ^-?[0-9]+(\.[0-9]+)?$ ]] || { printf '%s' "$RATE"; return 1; }
   awk -v s="$spot" -v m="$MARKUP" -v g="$GRID" -v tx="$TAX" -v v="$VAT" \
     'BEGIN{printf "%.4f", (s+m+g+tx)*v}'
 }
