@@ -121,19 +121,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          last_tag=$(git describe --tags --abbrev=0 2>/dev/null || true)
-          if [[ -n $last_tag ]]; then
-            if git diff --quiet "$last_tag" HEAD -- powerwatch; then
-              echo "powerwatch unchanged since $last_tag; nothing to release"; exit 0
-            fi
-            last_ver=${last_tag#v}
-          else
-            last_ver=0.0.0
-          fi
-
           # Bump level from the label on the PR(s) merged by this push; major
           # wins over minor over patch. bump:none, or a direct push with no
-          # associated PR, releases nothing.
+          # associated PR (e.g. the bump commit below), releases nothing. The
+          # label is the whole gate: an unlabeled push never releases.
           labels=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
                      --jq '.[].labels[].name' 2>/dev/null || true)
           if   grep -qx 'bump:major' <<<"$labels"; then level=major
@@ -142,13 +133,19 @@ jobs:
           else echo "no bump:major/minor/patch label; skipping release"; exit 0
           fi
 
-          IFS=. read -r major minor patch <<<"$last_ver"
+          # The current VERSION= line is the source of truth for what shipped
+          # (install.sh reports it); the new number is bumped from there. Tags
+          # are derived, so a repo that versioned without tagging still bumps
+          # from its real version rather than restarting at 0.
+          cur_ver=$(sed -n 's/^VERSION=//p' powerwatch | head -n1)
+          [[ $cur_ver =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::VERSION '$cur_ver' is not X.Y.Z"; exit 1; }
+          IFS=. read -r major minor patch <<<"$cur_ver"
           case $level in
             major) new_ver="$((major + 1)).0.0" ;;
             minor) new_ver="$major.$((minor + 1)).0" ;;
             patch) new_ver="$major.$minor.$((patch + 1))" ;;
           esac
-          echo "releasing $last_ver -> $new_ver ($level)"
+          echo "releasing $cur_ver -> $new_ver ($level)"
 
           sed -i "s/^VERSION=.*/VERSION=$new_ver/" powerwatch
           git config user.name  "github-actions[bot]"
