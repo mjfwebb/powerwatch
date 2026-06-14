@@ -4,8 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
-    # labeled/unlabeled so toggling the no-version-bump label re-runs the check
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -26,23 +28,72 @@ jobs:
       - name: Lint the script
         run: shellcheck powerwatch install.sh
 
-  # PRs that change the script must bump its VERSION= line, so installs and
-  # bug reports can tell builds apart. Pure refactors or comment fixes can opt
-  # out with the 'no-version-bump' label.
-  version-bump:
-    name: version bump
-    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'no-version-bump')
+  # The VERSION= line is owned by main, not by PRs: it is bumped once per
+  # release by the `release` job below. A PR that edits it would contend with
+  # any other open PR over the number, and merge order would silently decide
+  # the winner. So PRs must leave it untouched (see CONTRIBUTING.md, Releases).
+  no-version-change:
+    name: no version change
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
-      - name: Require a VERSION bump when powerwatch changed
+      - name: Reject VERSION changes in PRs
         run: |
           base=origin/${{ github.base_ref }}
-          # three-dot range: diff against the merge base, so commits that
-          # landed on main after this PR branched don't count
-          git diff --quiet "$base"...HEAD -- powerwatch && { echo "powerwatch unchanged"; exit 0; }
-          git diff "$base"...HEAD -- powerwatch | grep -q '^+VERSION=' && { echo "VERSION bumped"; exit 0; }
-          echo "::error file=powerwatch::powerwatch changed but VERSION= was not bumped (or add the no-version-bump label)"
-          exit 1
+          # three-dot range: diff against the merge base, so a bump that landed
+          # on main after this PR branched doesn't read as the PR's own change.
+          if git diff "$base"...HEAD -- powerwatch | grep -qE '^[+-]VERSION='; then
+            echo "::error file=powerwatch::PRs must not change the VERSION= line; it is bumped on main after merge (see CONTRIBUTING.md, Releases)."
+            exit 1
+          fi
+          echo "VERSION untouched"
+
+  # On main, cut a release when powerwatch changed since the last tag: ensure a
+  # VERSION bump and tag it. Patch bumps are automatic; a minor/major release is
+  # a manual VERSION edit on main (allowed there), which this job then just tags
+  # rather than bumping again. Runs only after tests and lint pass, so a broken
+  # main is never tagged.
+  release:
+    name: release tag
+    if: github.event_name == 'push'
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Bump patch and tag
+        run: |
+          set -euo pipefail
+          ver() { sed -n 's/^VERSION=//p' powerwatch | head -n1; }
+          last_tag=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          if [[ -n $last_tag ]]; then
+            if git diff --quiet "$last_tag" HEAD -- powerwatch; then
+              echo "powerwatch unchanged since $last_tag; nothing to release"; exit 0
+            fi
+            last_ver=${last_tag#v}
+          else
+            last_ver=0.0.0
+          fi
+          cur_ver=$(ver)
+          if [[ $cur_ver != "$last_ver" ]]; then
+            # VERSION was already moved on main (a manual minor/major); tag as-is.
+            new_ver=$cur_ver
+          else
+            # No manual bump: auto-increment the patch level.
+            IFS=. read -r major minor patch <<<"$cur_ver"
+            new_ver="$major.$minor.$((patch + 1))"
+            sed -i "s/^VERSION=.*/VERSION=$new_ver/" powerwatch
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "Bump version to $new_ver"
+            git push origin HEAD:main
+          fi
+          git tag "v$new_ver"
+          git push origin "v$new_ver"
+          echo "released v$new_ver"

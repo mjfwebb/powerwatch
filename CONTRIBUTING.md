@@ -93,11 +93,19 @@ Match the existing code:
 ## Releases
 
 The version lives in one place: the `VERSION=` line in `powerwatch` (read, not
-executed, by `install.sh` to report what an update did). It is bumped on `main`
-in a dedicated commit, separate from the changes it ships, so that feature PRs
-never contend over it:
+executed, by `install.sh` to report what an update did). It is owned by `main`,
+not by PRs, so that parallel PRs never contend over the number. CI enforces this
+from both sides:
 
-1. Merge the change PRs (which leave `VERSION` untouched).
-2. On `main`, bump `VERSION` following semver: patch for fixes, minor for new
-   user-facing behavior.
-3. Tag the bump commit `vX.Y.Z`.
+- The `no-version-change` job fails any PR whose diff touches the `VERSION=`
+  line.
+- The `release` job runs on every push to `main` (after tests and lint pass).
+  When `powerwatch` changed since the last tag, it cuts a release.
+
+Patch releases are automatic: merging a fix to `main` makes the `release` job
+bump the patch level, commit it, and tag `vX.Y.Z`.
+
+For a **minor or major** release, edit the `VERSION=` line directly on `main`
+(a maintainer push, not a PR) to the intended `X.Y.0`. The `release` job sees
+the version already ahead of the last tag and just tags it, rather than
+auto-bumping the patch.
