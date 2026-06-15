@@ -34,6 +34,21 @@
 # (this box is sv_SE and would otherwise emit '1781242297,100344').
 export LC_ALL=C
 
+# This script relies on EPOCHREALTIME (bash 5.0+) and printf '%(...)T' (bash
+# 4.2+). macOS ships bash 3.2 as /bin/bash, and `env bash` will pick that up
+# unless a newer bash (e.g. Homebrew's) is first on PATH. Bail with a clear
+# pointer rather than dying later on an empty EPOCHREALTIME.
+if (( BASH_VERSINFO[0] < 4 )); then
+  printf 'powerwatch: needs bash 4.2+ (you have %s).\n' "$BASH_VERSION" >&2
+  if [[ $(uname -s 2>/dev/null) == Darwin ]]; then
+    # shellcheck disable=SC2016  # backticks are literal here, not command substitution
+    printf '  macOS ships bash 3.2; install a newer one with `brew install bash`\n' >&2
+    # shellcheck disable=SC2016  # backticks are literal here, not command substitution
+    printf '  and run powerwatch under it (it is first on PATH for `env bash`).\n' >&2
+  fi
+  exit 1
+fi
+
 # Bump on release. install.sh greps this line to report what an update did.
 VERSION=0.5.0
 
@@ -190,9 +205,10 @@ POWERCAP=/sys/class/powercap
 # PowerShell to query WMI with". They differ when, e.g., Cygwin's default PATH
 # omits System32 so no powershell.exe is reachable: we then warn rather than
 # silently fall through to the Linux RAPL/udev advice, which is nonsense here.
-OS_WINDOWS=0; WIN_SHELL=0; PSEXE=""
+OS_WINDOWS=0; WIN_SHELL=0; PSEXE=""; OS_MACOS=0
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*) WIN_SHELL=1 ;;
+  Darwin) OS_MACOS=1 ;;
   *)
     if grep -qi microsoft /proc/version 2>/dev/null; then WIN_SHELL=1; fi ;;
 esac
@@ -225,6 +241,15 @@ for ps in /sys/class/power_supply/*; do
   fi
   [[ -z $AC  && $t == Mains   && -r "$ps/online"    ]] && AC=$ps
 done
+
+# macOS has no /sys; the battery lives in IOKit's AppleSmartBattery, read via
+# `ioreg`. When a battery is present (laptops, not desktop Macs) mark BAT_MODE
+# so bat_uw()/on_battery() take the macOS path. Amperage×Voltage there is the
+# whole-machine draw, accurate and unprivileged — the macOS analogue of Linux
+# power_now. Presence is decided by whether ioreg reports an Amperage key.
+if (( OS_MACOS )) && ioreg -rn AppleSmartBattery 2>/dev/null | grep -q '"Amperage"'; then
+  BAT=AppleSmartBattery; BAT_MODE=mac
+fi
 
 # --- discover the best RAPL domain: prefer psys, else package-0 -------------
 RAPL_DIR=""; RAPL_NAME=""
@@ -305,6 +330,21 @@ if (( OS_WINDOWS )); then
   [[ -n $WIN_CPU_ID ]] && WIN_CPU_OK=1
 fi
 
+# --- macOS SoC power, via powermetrics --------------------------------------
+# macOS exposes no unprivileged instantaneous SoC-power reading (no equivalent
+# of amdgpu's slowPPT), so on AC we read CPU+GPU+ANE package power from
+# `powermetrics`, which needs root — the same situation as Intel RAPL on Linux.
+# We probe once with `sudo -n` (non-interactive): if a cached/passwordless
+# sudoers grant lets it run, MAC_CPU_OK turns on and the value feeds the same
+# instantaneous-watts slot as the AMD APU / Windows LHM sensors; otherwise we
+# fall back to GPU-less AC (warned in the header) and rely on the accurate
+# battery path when unplugged. On battery the SoC reading is redundant anyway,
+# since the battery's own draw already covers the whole machine.
+MAC_CPU_OK=0
+if (( OS_MACOS )) && command -v powermetrics >/dev/null 2>&1; then
+  sudo -n powermetrics --samplers cpu_power -n1 -i1 >/dev/null 2>&1 && MAC_CPU_OK=1
+fi
+
 # --- colors -----------------------------------------------------------------
 if [[ -t 1 ]]; then
   R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; C=$'\e[36m'
@@ -365,11 +405,36 @@ rpi_w() {
     END { for (n in a) p += a[n]*u[n]; if (p > 0) printf "%.3f", p }'
 }
 
+# macOS battery + AC state, from one `ioreg -rn AppleSmartBattery` per tick.
+# Amperage and Voltage are the top-level keys; ExternalConnected is the AC flag.
+# Match the literal "<key>" = (with the spaces ioreg puts around top-level '='):
+# the BatteryData blob repeats "Voltage"=… etc. without spaces, so this never
+# picks up a nested duplicate. Amperage is a signed mA reading that IOKit stores
+# as an unsigned 64-bit value (e.g. 18446744073709550250 for -1366 mA); bash
+# arithmetic is 64-bit signed and wraps it back to the real negative, where awk
+# floating point would not. Cached so bat_uw() and on_battery() share one fork.
+_MAC_AMP=0; _MAC_VOLT=0; _MAC_ONLINE=1
+mac_poll_battery() {
+  local line
+  while IFS= read -r line; do
+    case $line in
+      *'"Amperage" = '*)          _MAC_AMP=${line##*= } ;;
+      *'"Voltage" = '*)           _MAC_VOLT=${line##*= } ;;
+      *'"ExternalConnected" = '*) [[ ${line##*= } == Yes ]] && _MAC_ONLINE=1 || _MAC_ONLINE=0 ;;
+    esac
+  done < <(ioreg -rn AppleSmartBattery 2>/dev/null)
+}
+
 # Battery draw in µW (matching power_now's unit), from whichever source was
 # discovered: power_now directly, or current_now (µA) × voltage_now (µV) / 1e6.
+# On macOS it is |Amperage(mA)| × Voltage(mV), which is already µW (mA·mV = µW),
+# from the values mac_poll_battery() cached for this tick.
 bat_uw() {
   if (( OS_WINDOWS )); then
     echo $(( ${_WIN_DISCHARGE_MW:-0} * 1000 ))
+  elif [[ $BAT_MODE == mac ]]; then
+    local amp=$(( _MAC_AMP ))           # wrap the unsigned IOKit value to signed
+    echo $(( (amp < 0 ? -amp : amp) * _MAC_VOLT ))
   elif [[ $BAT_MODE == power ]]; then
     cat "$BAT/power_now" 2>/dev/null
   elif [[ $BAT_MODE == iv    ]]; then
@@ -408,6 +473,35 @@ fi
 # shellcheck disable=SC2016  # $r/$p/$c are PowerShell variables, not shell
 WIN_POLL_PS="$_WIN_BAT_PS$_WIN_CPU_PS"'"$r $p $c"'
 
+# macOS SoC watts from the cached powermetrics poll, or empty when unavailable.
+mac_cpu_w() { local w=${_MAC_CPU_W:-}; [[ $w =~ ^[0-9]+(\.[0-9]+)?$ ]] && printf '%s' "$w"; }
+
+# Cache of the last powermetrics poll: a `sudo powermetrics` spawn takes ~1s, so
+# (as with the Windows poll) we run it at most every MAC_POLL seconds and reuse
+# the value between. Energy still integrates over the real dt, so throttling the
+# sampler never distorts the totals. The sampler reports combined CPU+GPU+ANE
+# package power in mW (newer macOS) or W (older); we read the "Combined Power"
+# line and normalise to watts. Polled lazily from win_cpu_w()'s macOS sibling.
+MAC_POLL="${POWERWATCH_MAC_POLL:-5}"
+_MAC_CPU_W=""; _MAC_LAST_POLL=0
+mac_poll_cpu() {
+  (( MAC_CPU_OK )) || return
+  local nowf=${EPOCHREALTIME%.*}
+  (( nowf - _MAC_LAST_POLL >= MAC_POLL )) || return
+  _MAC_LAST_POLL=$nowf
+  # `Combined Power (CPU + GPU + ANE): <n> mW` is the whole-SoC figure on Apple
+  # Silicon. Fall back to summing the CPU/GPU/ANE component lines if the combined
+  # line is absent (some macOS versions/Intel Macs omit it). Values are mW unless
+  # the unit says W; normalise either way.
+  _MAC_CPU_W=$(sudo -n powermetrics --samplers cpu_power -n1 -i200 2>/dev/null | awk '
+    function watts(v, u) { return (u ~ /mW/) ? v/1000 : v }
+    /Combined Power/      { v=$(NF-1); combined=watts(v, $NF); have=1 }
+    /CPU Power:/          { v=$(NF-1); sum+=watts(v, $NF) }
+    /GPU Power:/          { v=$(NF-1); sum+=watts(v, $NF) }
+    /ANE Power:/          { v=$(NF-1); sum+=watts(v, $NF) }
+    END { if (have) printf "%.3f", combined; else if (sum > 0) printf "%.3f", sum }')
+}
+
 on_battery() {
   if (( OS_WINDOWS )); then
     local nowf=${EPOCHREALTIME%.*}        # integer seconds (LC_ALL=C ensures '.')
@@ -421,6 +515,11 @@ on_battery() {
       _WIN_LAST_POLL=$nowf
     fi
     (( _WIN_ONLINE == 0 ))
+  elif [[ $BAT_MODE == mac ]]; then
+    # One ioreg per tick refreshes Amperage/Voltage/ExternalConnected together,
+    # so bat_uw() reuses what this read cached. On battery when not plugged in.
+    mac_poll_battery
+    (( _MAC_ONLINE == 0 ))
   else
     [[ -r "$AC/online" && $(<"$AC/online") == 0 ]]
   fi
@@ -595,6 +694,14 @@ build_header() {
   elif (( WIN_SHELL )); then
     printf -v s '%s⚠ Windows shell but no PowerShell on PATH; GPU-only (see README).%s' "$Y" "$RST"
     hdr_lines+=("$s")
+  elif (( OS_MACOS && MAC_CPU_OK )); then
+    printf -v s '%ssource: macOS SoC power (powermetrics CPU+GPU+ANE) on AC · battery draw when unplugged%s' "$GR" "$RST"
+    hdr_lines+=("$s")
+  elif (( OS_MACOS )); then
+    printf -v s '%ssource: macOS battery draw when unplugged · no plug-in power without powermetrics%s' "$GR" "$RST"
+    hdr_lines+=("$s")
+    printf -v s '%s  grant passwordless sudo for powermetrics (see README) to add SoC power on AC.%s' "$GR" "$RST"
+    hdr_lines+=("$s")
   else
     printf -v s '%s⚠ RAPL not readable; run the udev rule (see README) for CPU power.%s' "$Y" "$RST"
     hdr_lines+=("$s")
@@ -714,10 +821,13 @@ while :; do
   # On a Raspberry Pi the PMIC's whole-board sum stands in for the platform
   # power (apu holds it, since it integrates identically to the AMD APU sensor).
   # On Windows the LHM/OHM CPU-package sensor feeds the same instantaneous slot.
+  # On macOS the powermetrics SoC reading (CPU+GPU+ANE) feeds it too; g stays 0
+  # there since that figure already includes the GPU.
   on_bat=0; pw=0; apu=-1
   if on_battery; then on_bat=1; src=BAT; pw=$(bat_uw); pw=${pw:-0}
   elif (( RPI_OK )); then src=PI; apu=$(rpi_w); apu=${apu:--1}
   elif (( WIN_CPU_OK )); then src=AC; apu=$(win_cpu_w); apu=${apu:--1}
+  elif (( MAC_CPU_OK )); then src=AC; mac_poll_cpu; apu=$(mac_cpu_w); apu=${apu:--1}
   else src=AC; (( RAPL_OK )) || { apu=$(apu_w); apu=${apu:--1}; }
   fi
 
@@ -751,6 +861,7 @@ while :; do
 
   if [[ $src == BAT ]]; then detail="batt draw (real)"
   elif [[ $src == PI ]]; then detail="whole board"
+  elif (( MAC_CPU_OK )); then detail="soc (cpu+gpu+ane)"   # g is folded into cw here
   else printf -v detail '%4.1f + %4.1f' "$cw" "$g"; fi
 
   (( rate_src == 0 )) && rtag=L || rtag=F
