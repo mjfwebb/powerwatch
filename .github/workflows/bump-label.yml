@@ -1,0 +1,62 @@
+name: bump label
+
+# Runs as pull_request_target (not pull_request) so it fires automatically on
+# fork PRs without the "Approve and run" gate: a fork PR's first workflow run is
+# approved by a maintainer, but every later run — including the one a `labeled`
+# event kicks off — re-enters that approval queue, so the bump-label check would
+# never re-evaluate after a label is added and the PR would stay red. This is
+# safe because the job only reads labels and posts a comment via the API; it
+# never checks out or runs PR code, so the elevated token pull_request_target
+# grants is not exposed to untrusted input.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+# Every PR must declare its release intent with exactly one bump:* label, so
+# the release job on main knows how to version it (and nothing slips through
+# on the implicit default). If none is set, post a comment asking for one and
+# fail; the check re-runs when a label is added.
+jobs:
+  bump-label:
+    name: bump label
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      MARKER: <!-- bump-label-check -->
+    steps:
+      - name: Require exactly one bump:* label
+        run: |
+          set -euo pipefail
+          labels=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/labels" --jq '.[].name')
+          n=$(grep -cE '^bump:(major|minor|patch|none)$' <<<"$labels" || true)
+          if [[ $n -eq 1 ]]; then
+            echo "bump label present: $(grep -E '^bump:' <<<"$labels")"
+            # Resolved: drop any stale prompt comment.
+            id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+                   --jq "map(select(.body | startswith(\"$MARKER\"))) | .[-1].id // empty")
+            [[ -n $id ]] && gh api -X DELETE "repos/${GITHUB_REPOSITORY}/issues/comments/$id" || true
+            exit 0
+          fi
+
+          if [[ $n -gt 1 ]]; then
+            msg="This PR has more than one \`bump:*\` label. Keep exactly one."
+          else
+            msg="This PR has no release label. Add exactly one of \`bump:major\`, \`bump:minor\`, \`bump:patch\`, or \`bump:none\` so the release job knows how to version it after merge."
+          fi
+          body=$(printf '%s\n%s\n\nSee CONTRIBUTING.md (Releases) for what each level means.' "$MARKER" "$msg")
+          # Update the existing prompt comment if present, else create one.
+          id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+                 --jq "map(select(.body | startswith(\"$MARKER\"))) | .[-1].id // empty")
+          if [[ -n $id ]]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/$id" -f body="$body" >/dev/null
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -f body="$body" >/dev/null
+          fi
+          echo "::error::PR needs exactly one bump:* label"
+          exit 1
