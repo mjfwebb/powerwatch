@@ -92,10 +92,11 @@ battery path.
 
 ## macOS
 
-macOS ships bash 3.2, but powerwatch needs bash 4.2+ (`EPOCHREALTIME` and
-`printf '%(...)T'`). Install a newer one with `brew install bash`; it goes on
-PATH ahead of the system bash, so the `env bash` shebang picks it up. powerwatch
-checks the version at startup and exits with a pointer if it runs under 3.2.
+macOS ships bash 3.2, but powerwatch needs bash 5.0+ (for `EPOCHREALTIME`;
+`printf '%(...)T'` needs 4.2). Install a newer one with `brew install bash`; it
+goes on PATH ahead of the system bash, so the `env bash` shebang picks it up.
+powerwatch checks the version at startup and exits with a pointer if it runs
+under 5.0.
 
 On battery, powerwatch reads the battery itself — IOKit's `AppleSmartBattery`,
 via `ioreg` — and multiplies `Amperage × Voltage` for whole-machine draw. This

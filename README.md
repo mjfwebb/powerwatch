@@ -66,9 +66,9 @@ PATH by default; the installer prints a note if so. Add it to your shell, e.g.
 ### macOS
 
 macOS is supported, with one requirement: it ships bash 3.2, but powerwatch
-needs bash 4.2+, so install a newer one with `brew install bash` (Homebrew's
+needs bash 5.0+, so install a newer one with `brew install bash` (Homebrew's
 goes on PATH ahead of the system bash, so the `env bash` shebang picks it up).
-powerwatch says so and exits if it ever runs under 3.2. The same one-liner
+powerwatch says so and exits if it ever runs under 5.0. The same one-liner
 installs it.
 
 On battery it reads whole-machine draw from the battery itself (IOKit's
