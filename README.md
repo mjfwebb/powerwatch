@@ -3,9 +3,10 @@
 A live terminal monitor that turns a Linux laptop's power sensors into
 cumulative energy (Wh/kWh), a running electricity cost, and a projected
 daily/monthly run rate. It reads CPU/SoC power from Intel RAPL or, on AMD APUs
-(e.g. the Steam Deck), the `amdgpu` sensor, adds an NVIDIA dGPU if present, and
-uses the battery's own draw when unplugged. On a Raspberry Pi 5 it reads
-whole-board power from the PMIC instead.
+(e.g. the Steam Deck), the `amdgpu` sensor, adds a discrete NVIDIA or AMD GPU if
+present, and uses the battery's own draw when unplugged. On a Raspberry Pi 5 it
+reads whole-board power from the PMIC instead. (An Intel iGPU needs no separate
+reading: it is already inside RAPL.)
 
 ![powerwatch output: a pinned reverse-video header bar above scrolling rows of timestamped watts (green when low, yellow when higher), the cpu+gpu split, session Wh and cost, the live rate, a run-rate projection, and a sparkline](example.svg)
 
