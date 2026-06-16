@@ -86,9 +86,15 @@ board's total draw, which needs no root. Just run `powerwatch`; the header reads
 This covers the whole board: the SoC, RAM, USB, and I/O rails, measured after
 the 5 V input. Unlike the laptop AC estimate, it is not a compute-only
 undercount. It still leaves out the input regulator's conversion loss, so a wall
-meter on the USB-C supply reads a little higher. Boards older than the Pi 5 do
-not expose `pmic_read_adc`; on those powerwatch falls back to its GPU-only or
-battery path.
+meter on the USB-C supply reads a little higher.
+
+**Pi 4 and earlier have no readable power sensor.** `pmic_read_adc` is a Pi 5
+addition, and these boards have neither RAPL nor a battery, so there is nothing
+for powerwatch to integrate. It still runs, but the header says no sensor was
+found rather than pointing you at the Intel udev rule. To meter a Pi 4, measure
+at the wall with a smart plug. The Intel `chmod` step in the README does not
+apply: `/sys/devices/virtual/powercap/` exists only on Intel hardware, so that
+command reports the path does not exist.
 
 ## macOS
 
