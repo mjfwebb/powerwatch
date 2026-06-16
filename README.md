@@ -63,6 +63,36 @@ Git Bash's `~/.local/bin` (`/c/Users/<you>/.local/bin`) is not on the Windows
 PATH by default; the installer prints a note if so. Add it to your shell, e.g.
 `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc`.
 
+### macOS
+
+macOS is supported, with one requirement: it ships bash 3.2, but powerwatch
+needs bash 5.0+, so install a newer one with `brew install bash` (Homebrew's
+goes on PATH ahead of the system bash, so the `env bash` shebang picks it up).
+powerwatch says so and exits if it ever runs under 5.0. The same one-liner
+installs it.
+
+On battery it reads whole-machine draw from the battery itself (IOKit's
+`AppleSmartBattery`, via `ioreg`) — accurate and needing no setup, exactly like
+Linux on battery. On AC there is no unprivileged power sensor on Apple Silicon,
+so powerwatch reads CPU+GPU+ANE package power from `powermetrics`, which needs
+root. Grant it passwordless `sudo` once (see below) and AC shows real SoC power;
+without it powerwatch is battery-accurate and says in the header that plug-in
+power needs `powermetrics`. The sampler is polled at most every
+`POWERWATCH_MAC_POLL` seconds (default 5), since each spawn is costly.
+
+To enable the AC path, add a sudoers rule for your user (use the full path from
+`command -v powermetrics`, normally `/usr/bin/powermetrics`):
+
+```bash
+echo "$USER ALL=(root) NOPASSWD: /usr/bin/powermetrics" \
+  | sudo tee "/etc/sudoers.d/powerwatch-powermetrics" >/dev/null
+sudo chmod 0440 /etc/sudoers.d/powerwatch-powermetrics
+```
+
+This is the macOS analogue of the Intel udev rule below: it grants read-only
+access to one power sensor and nothing more. Remove the file to revoke it. See
+[what powerwatch measures](docs/sensors.md#macos) for the per-source details.
+
 ## Setup: read the CPU power sensor (Intel, one-time)
 
 Linux restricts the Intel CPU power sensor to root. Let your user read it:

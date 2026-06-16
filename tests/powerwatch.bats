@@ -422,6 +422,93 @@ EOF
   [[ "$output" =~ ^powerwatch\ [0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
+# --- macOS battery readers ------------------------------------------------------
+# These exercise the macOS code paths regardless of the host OS: the readers are
+# pure functions of the cached _MAC_* state and BAT_MODE, so the tests set that
+# state directly (or stub `ioreg` on PATH for the parse path) rather than needing
+# a real Mac. The signed-Amperage decode is the part most worth pinning down.
+
+# Put a fake `ioreg` on PATH that emits one AppleSmartBattery record. Args:
+# amperage (raw, as IOKit stores it), voltage (mV), external-connected (Yes/No).
+stub_ioreg() {
+  local amp=$1 volt=$2 ext=$3
+  cat >"$STUB_DIR/ioreg" <<EOF
+#!/usr/bin/env bash
+cat <<REC
+      "Amperage" = $amp
+      "ExternalConnected" = $ext
+      "Voltage" = $volt
+REC
+EOF
+  chmod +x "$STUB_DIR/ioreg"
+  export PATH="$STUB_DIR:$PATH"
+}
+
+@test "mac bat_uw decodes a negative (discharging) Amperage from its unsigned form" {
+  source "$PW"
+  BAT_MODE=mac
+  # 18446744073709550250 is -1366 mA as an unsigned 64-bit value; at 11408 mV
+  # that is 1366 * 11408 = 15583328 uW. The decode must happen in 64-bit signed
+  # bash arithmetic, not awk floats (which round it to -2048 mA).
+  _MAC_AMP=18446744073709550250 _MAC_VOLT=11408
+  run bat_uw
+  [ "$output" = "15583328" ]
+}
+
+@test "mac bat_uw treats a positive (charging) Amperage as magnitude" {
+  source "$PW"
+  BAT_MODE=mac
+  _MAC_AMP=1200 _MAC_VOLT=12000
+  run bat_uw
+  [ "$output" = "14400000" ]
+}
+
+@test "mac_poll_battery parses Amperage, Voltage and the AC flag from ioreg" {
+  stub_ioreg 18446744073709550250 11408 No
+  source "$PW"
+  mac_poll_battery
+  [ "$_MAC_AMP" = "18446744073709550250" ]
+  [ "$_MAC_VOLT" = "11408" ]
+  [ "$_MAC_ONLINE" -eq 0 ]
+}
+
+@test "mac on_battery is true unplugged and false on AC" {
+  stub_ioreg 18446744073709550250 11408 No
+  source "$PW"
+  BAT_MODE=mac
+  run on_battery
+  [ "$status" -eq 0 ]              # discharging -> on battery
+
+  stub_ioreg 1200 12000 Yes        # plugged in and charging
+  source "$PW"
+  BAT_MODE=mac
+  run on_battery
+  [ "$status" -ne 0 ]              # external power -> not on battery
+}
+
+@test "mac on_battery ignores the nested BatteryData Voltage/Amperage" {
+  # The real record carries a BatteryData blob with its own "Voltage"=… and
+  # "Amperage"=… (no spaces around '='); only the top-level "<key> = " lines
+  # should win. Emit a decoy blob line before the real keys and check the
+  # top-level values are the ones cached.
+  cat >"$STUB_DIR/ioreg" <<'REC'
+#!/usr/bin/env bash
+cat <<'EOF'
+      "BatteryData" = {"Voltage"=9999,"Amperage"=8888,"MaxCapacity"=100}
+      "Amperage" = 1200
+      "ExternalConnected" = Yes
+      "Voltage" = 12000
+EOF
+REC
+  chmod +x "$STUB_DIR/ioreg"
+  export PATH="$STUB_DIR:$PATH"
+  source "$PW"
+  mac_poll_battery
+  [ "$_MAC_AMP" = "1200" ]
+  [ "$_MAC_VOLT" = "12000" ]
+  [ "$_MAC_ONLINE" -eq 1 ]
+}
+
 # --- script smoke test ----------------------------------------------------------
 
 @test "script starts, prints the header, and exits cleanly on SIGTERM" {
