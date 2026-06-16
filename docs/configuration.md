@@ -3,8 +3,8 @@
 Complete reference for every powerwatch setting. Part of the
 [powerwatch README](../README.md).
 
-Every setting can be given two ways — a `POWERWATCH_*` environment variable or a
-command-line flag — and they are exactly equivalent. When both are present the
+Every setting can be given two ways: a `POWERWATCH_*` environment variable or a
+command-line flag, and they are exactly equivalent. When both are present the
 flag wins, so the order of precedence is:
 
 ```
@@ -64,7 +64,7 @@ time-of-use tariffs, see the [pricing guide](pricing.md).
 
 ## Examples
 
-Each pair below is equivalent — environment variables on the left, flags on the
+Each pair below is equivalent: environment variables on the left, flags on the
 right:
 
 ```bash
