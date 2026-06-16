@@ -293,12 +293,14 @@ fi
 # root. Like the AMD APU sensor it is an instantaneous power, not a monotonic
 # counter, so the main loop integrates it over the interval. Only used when no
 # RAPL counter and no amdgpu APU sensor were found.
-RPI_OK=0
+RPI_OK=0; PI_NO_PMIC=0
 if (( ! RAPL_OK )) && [[ -z $APU_FILE ]] && command -v vcgencmd >/dev/null 2>&1; then
   # Confirm the PMIC actually answers: only Pi 5-class boards expose pmic_read_adc.
   # Older Pis (or a missing firmware mailbox) print nothing or an error, leaving
-  # the GPU-only/battery path unchanged.
-  vcgencmd pmic_read_adc 2>/dev/null | grep -q 'current(' && RPI_OK=1
+  # the GPU-only/battery path unchanged. PI_NO_PMIC marks "this is a Pi, but its
+  # PMIC has no readable power sensor" so the header can say so rather than fall
+  # through to the Intel "run the udev rule" advice, which is meaningless here.
+  if vcgencmd pmic_read_adc 2>/dev/null | grep -q 'current('; then RPI_OK=1; else PI_NO_PMIC=1; fi
 fi
 
 have_nvidia=0; command -v nvidia-smi >/dev/null 2>&1 && have_nvidia=1
@@ -702,10 +704,25 @@ build_header() {
     hdr_lines+=("$s")
     printf -v s '%s  grant passwordless sudo for powermetrics (see README) to add SoC power on AC.%s' "$GR" "$RST"
     hdr_lines+=("$s")
-  else
+  elif (( PI_NO_PMIC )); then
+    # A Pi older than the 5 (no readable PMIC) and no battery: nothing to measure.
+    # Don't send them to the Intel udev rule; this board simply has no sensor.
+    printf -v s '%s⚠ no readable power sensor on this Pi (pre-Pi-5 boards lack the PMIC ADC).%s' "$Y" "$RST"
+    hdr_lines+=("$s")
+    printf -v s '%s  A Pi 5 reports whole-board power; to meter a Pi 4, use a smart plug. See docs/sensors.md.%s' "$GR" "$RST"
+    hdr_lines+=("$s")
+  elif [[ -n $RAPL_DIR ]]; then
+    # RAPL hardware exists but its counter is not readable: the udev rule fixes it.
     printf -v s '%s⚠ RAPL not readable; run the udev rule (see README) for CPU power.%s' "$Y" "$RST"
     hdr_lines+=("$s")
     printf -v s '%s  Falling back to GPU-only on AC (big undercount); accurate on battery.%s' "$GR" "$RST"
+    hdr_lines+=("$s")
+  else
+    # No RAPL, no APU, no PMIC, no battery: an unsupported sensor setup. The udev
+    # rule would not help (there is no powercap hardware), so don't suggest it.
+    printf -v s '%s⚠ no supported power sensor found (see docs/sensors.md).%s' "$Y" "$RST"
+    hdr_lines+=("$s")
+    printf -v s '%s  Accurate on battery where present; otherwise little or nothing to measure.%s' "$GR" "$RST"
     hdr_lines+=("$s")
   fi
   # Column headers, sized like the data row: the "run rate" label is included

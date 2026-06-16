@@ -95,7 +95,8 @@ access to one power sensor and nothing more. Remove the file to revoke it. See
 
 ## Setup: read the CPU power sensor (Intel, one-time)
 
-Linux restricts the Intel CPU power sensor to root. Let your user read it:
+This step is **Intel only**. Linux restricts the Intel CPU power sensor to root;
+let your user read it:
 
 ```bash
 sudo cp 99-powercap-readable.rules /etc/udev/rules.d/
@@ -104,13 +105,24 @@ sudo udevadm trigger --subsystem-match=powercap
 sudo chmod -R a+r /sys/devices/virtual/powercap/   # apply now, without a reboot
 ```
 
+The `/sys/devices/virtual/powercap/` path only exists on Intel hardware, so on
+other platforms these commands are not applicable (the `chmod` will report that
+the path does not exist). Skip this step there.
+
 Without it powerwatch still runs, but on AC it sees only the GPU and reads low
 (it says so in the header); on battery it is accurate either way. **AMD APUs
 need no setup**: their `amdgpu` sensor is readable already. **A Raspberry Pi 5
 needs no setup** either: its PMIC is read through `vcgencmd` without root, and
-reports whole-board power. See
-[what powerwatch measures](docs/sensors.md) for the per-source details and why
-the Intel sensor is root-only.
+reports whole-board power.
+
+> **Raspberry Pi 4 and earlier have no readable power sensor.** The whole-board
+> PMIC reading (`vcgencmd pmic_read_adc`) exists only on the Pi 5 and later, and
+> these boards have neither RAPL nor a battery, so powerwatch has nothing to
+> measure. It still runs and says so in the header. To meter a Pi 4, measure at
+> the wall with a smart plug.
+
+See [what powerwatch measures](docs/sensors.md) for the per-source details and
+why the Intel sensor is root-only.
 
 ## Usage
 
