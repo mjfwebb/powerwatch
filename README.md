@@ -21,7 +21,7 @@ layout details.
 
 ## Install
 
-One line, no clone needed — and re-running the same line updates an existing
+One line, no clone needed, and re-running the same line updates an existing
 install in place:
 
 ```bash

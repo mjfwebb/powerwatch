@@ -112,7 +112,7 @@ exactly one (the `bump-label` check fails and comments otherwise):
 | `bump:patch` | patch release | bug fixes, internal changes |
 | `bump:minor` | minor release | new user-facing behavior |
 | `bump:major` | major release | breaking changes |
-| `bump:none` | no release | docs, CI, comments — nothing users run |
+| `bump:none` | no release | docs, CI, comments; nothing users run |
 
 `major` wins over `minor` over `patch` if several are somehow present. The
 `bump-label` check re-runs when you add or change the label, so a red check
