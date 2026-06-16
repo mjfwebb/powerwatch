@@ -169,9 +169,9 @@ EOF
   [ -z "$output" ]
 }
 
-# --- gpu_w: nvidia-smi parsing -----------------------------------------------
+# --- gpu_w: discrete-GPU power, dispatched over vendor -----------------------
 
-@test "gpu_w extracts the Power Draw wattage" {
+@test "gpu_w extracts the NVIDIA Power Draw wattage" {
   cat >"$STUB_DIR/nvidia-smi" <<'EOF'
 #!/usr/bin/env bash
 printf '    Power Draw                        : 12.34 W\n'
@@ -179,11 +179,12 @@ EOF
   chmod +x "$STUB_DIR/nvidia-smi"
   export PATH="$STUB_DIR:$PATH"
   source "$PW"
+  DGPU_KIND=nvidia
   run gpu_w
   [ "$output" = "12.34" ]
 }
 
-@test "gpu_w reports 0 when the GPU is runtime-suspended (N/A)" {
+@test "gpu_w reports 0 when the NVIDIA GPU is runtime-suspended (N/A)" {
   cat >"$STUB_DIR/nvidia-smi" <<'EOF'
 #!/usr/bin/env bash
 printf '    Power Draw                        : N/A\n'
@@ -191,13 +192,29 @@ EOF
   chmod +x "$STUB_DIR/nvidia-smi"
   export PATH="$STUB_DIR:$PATH"
   source "$PW"
+  DGPU_KIND=nvidia
   run gpu_w
   [ "$output" = "0" ]
 }
 
-@test "gpu_w reports 0 without nvidia-smi" {
+@test "gpu_w reads an AMD discrete card's hwmon power1_input (µW -> W)" {
   source "$PW"
-  have_nvidia=0
+  echo 45000000 >"$BATS_TEST_TMPDIR/power1_input"
+  DGPU_KIND=amd; DGPU_HWMON="$BATS_TEST_TMPDIR"
+  run gpu_w
+  [ "$output" = "45.000" ]
+}
+
+@test "gpu_w reports 0 for an AMD card whose hwmon node is unreadable" {
+  source "$PW"
+  DGPU_KIND=amd; DGPU_HWMON="$BATS_TEST_TMPDIR/does-not-exist"
+  run gpu_w
+  [ "$output" = "0" ]
+}
+
+@test "gpu_w reports 0 when no discrete GPU was detected" {
+  source "$PW"
+  DGPU_KIND=""
   run gpu_w
   [ "$output" = "0" ]
 }

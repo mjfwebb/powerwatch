@@ -8,7 +8,7 @@ How each power source is read, what it covers, and what it misses. Part of the
 | Source | What it covers | Notes |
 |--------|----------------|-------|
 | Intel RAPL `psys` (`/sys/class/powercap/intel-rapl:*`) | CPU package, iGPU, DRAM, VRMs | Read as a monotonic µJ energy counter, so interval energy is exact. Root-only by default (see the udev setup in the README). Linux only. |
-| NVIDIA dGPU (`nvidia-smi`) | The discrete GPU | On its own rail, not in RAPL. It runtime-suspends in hybrid/Optimus mode and reports no data, which powerwatch counts as ~0 W. Works on Linux and Windows. |
+| Discrete GPU: NVIDIA (`nvidia-smi`) or AMD (`amdgpu` hwmon `power1_input`) | The discrete GPU | On its own rail, not in RAPL, so it is added to the platform power on AC. NVIDIA is read from `nvidia-smi` (Linux and Windows) and runtime-suspends in hybrid/Optimus mode, reporting no data, counted as ~0 W; an AMD discrete Radeon is read from its `amdgpu` hwmon `power1_input` (Linux). An **Intel iGPU is not added here**: it is already inside RAPL's package/psys domain, so counting it again would double-count. Intel Arc discrete GPUs are not yet supported (see below). |
 | AMD APU `slowPPT` (`amdgpu` hwmon `power1_input`) | The SoC package (CPU + iGPU) | Fallback used on Ryzen APUs (e.g. the Steam Deck) where RAPL is root-only and excludes the iGPU. Read without root as instantaneous watts and integrated over the interval. Linux only. |
 | Raspberry Pi PMIC (`vcgencmd pmic_read_adc`) | The whole board (SoC, RAM, USB, I/O rails) | Used on a Pi (5 and up), which has neither RAPL nor an `amdgpu` sensor. The PMIC reports every supply rail's current and voltage; powerwatch sums current×voltage across the rails. Read without root as instantaneous watts and integrated over the interval. Linux only. |
 | Battery `power_now` | The whole laptop (CPU, GPU, screen, everything) | Only valid on battery. When unplugged it supersedes the estimate above and is genuinely accurate. Machines without `power_now` (e.g. the Steam Deck) are read from `current_now × voltage_now` instead. Linux only. |
@@ -32,7 +32,7 @@ How each power source is read, what it covers, and what it misses. Part of the
 | counter wrap point | `…/max_energy_range_uj` |
 | AMD APU power | `amdgpu` hwmon `power1_input` (label `slowPPT`), when the RAPL counter is unreadable |
 | Raspberry Pi power | `vcgencmd pmic_read_adc`, summing each rail's current×voltage, when there is no RAPL or `amdgpu` sensor |
-| dGPU power | `nvidia-smi -q -d POWER` ("Power Draw"); absent means 0 W (suspended) |
+| dGPU power | NVIDIA: `nvidia-smi -q -d POWER` ("Power Draw"), absent means 0 W (suspended). AMD discrete: `amdgpu` hwmon `power1_input` (µW), the node without a `slowPPT` label. No discrete card means 0 W. |
 | on-battery total | the discovered battery's `power_now` (µW), or `current_now × voltage_now` where absent |
 | AC vs battery | the AC adapter's `online` flag |
 
@@ -74,6 +74,29 @@ udev rule doesn't help. powerwatch reads the `amdgpu` SoC power sensor instead
 `powerwatch` and the header will read `source: AMD APU SoC power`. On battery,
 machines without `power_now` (including the Steam Deck) are read from
 `current_now × voltage_now`, so the unplugged reading works too.
+
+## Discrete GPUs and the iGPU
+
+On AC, powerwatch adds a discrete GPU's power to the CPU-platform (RAPL) figure.
+The key rule is that the GPU term only covers a card on its **own power rail**,
+which RAPL does not already measure:
+
+- **NVIDIA** discrete cards are read from `nvidia-smi`. In hybrid/Optimus laptops
+  the card runtime-suspends when idle and reports no draw, counted as ~0 W.
+- **AMD** discrete Radeons are read from the card's `amdgpu` hwmon
+  `power1_input`. powerwatch picks the node that is *not* the APU package sensor
+  (no `slowPPT` label), so on a Ryzen APU the iGPU is not mistaken for a dGPU.
+
+An **Intel iGPU is deliberately not added.** Intel's RAPL `package`/`psys` domain
+already includes the iGPU, so adding a separate iGPU reading would double-count
+it. On an Intel laptop with no discrete card the GPU term is simply 0, and the
+header reads `source: RAPL <domain> (iGPU included)`.
+
+**Intel Arc discrete GPUs are not yet supported.** An Arc card and the Intel
+iGPU both use the `i915`/`xe` driver and expose similar hwmon power nodes, so
+reliably telling "this is the discrete card, add it" from "this is the iGPU,
+already in RAPL" is not yet solved here, and getting it wrong would silently
+double-count. If you have an Arc system to test on, that is the missing piece.
 
 ## Raspberry Pi
 
