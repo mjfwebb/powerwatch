@@ -2,8 +2,8 @@ name: bump label
 
 # Runs as pull_request_target (not pull_request) so it fires automatically on
 # fork PRs without the "Approve and run" gate: a fork PR's first workflow run is
-# approved by a maintainer, but every later run — including the one a `labeled`
-# event kicks off — re-enters that approval queue, so the bump-label check would
+# approved by a maintainer, but every later run (including the one a `labeled`
+# event kicks off) re-enters that approval queue, so the bump-label check would
 # never re-evaluate after a label is added and the PR would stay red. This is
 # safe because the job only reads labels and posts a comment via the API; it
 # never checks out or runs PR code, so the elevated token pull_request_target
